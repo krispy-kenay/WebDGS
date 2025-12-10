@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>WebDGS – Differentiable Gaussian Splatting</title>
+  </head>
+  <body>
+    <canvas id="webgpu-canvas"></canvas>
+    <div class="landing-shell">
+      <div id="control-panel" class="panel">
+        <header class="panel__header">
+          <div>
+            <p class="panel__eyebrow">WebGPU Differentiable Rendering</p>
+            <h1>WebDGS</h1>
+          </div>
+          <button id="panel-collapse" class="icon-button" aria-label="Toggle control panel">
+            ☰
+          </button>
+        </header>
+
+        <div class="panel__body">
+          <div class="panel__body-fade panel__body-fade--top"></div>
+          <div class="panel__body-content">
+            <section class="panel__section">
+              <p class="panel__lede">
+                Upload COLMAP outputs and receive a differentiable 3D Gaussian Splat scene,
+                or drop a splat PLY file for an instant viewer.
+              </p>
+            </section>
+
+            <section class="panel__section">
+              <h2>System Status</h2>
+              <div id="status-indicator" class="status-indicator" data-status="checking">
+                <span class="status-indicator__icon" id="status-icon">⏳</span>
+                <div>
+                  <p id="status-text">Checking WebGPU support…</p>
+                  <p id="status-details" class="status-indicator__details"></p>
+                </div>
+              </div>
+            </section>
+
+            <section class="panel__section">
+              <h2>Data Sources</h2>
+              <p class="muted">
+                Load a finished 3DGS scene (.ply) or point the pipeline at COLMAP data (images, sparse, dense, etc.).
+              </p>
+              <div class="action-row">
+                <label class="primary action-button">
+                  <input type="file" id="ply-input" accept=".ply" hidden />
+                  Load splat (.ply)
+                </label>
+                <label class="secondary action-button">
+                  <input type="file" id="colmap-input" webkitdirectory directory multiple hidden />
+                  Load COLMAP folder
+                </label>
+                <label class="secondary action-button">
+                  <input type="file" id="camera-input" accept=".json" hidden />
+                  Load camera presets
+                </label>
+              </div>
+            </section>
+
+            <section class="panel__section">
+              <h2>Activity Log</h2>
+              <div id="log" class="log-box" aria-live="polite"></div>
+            </section>
+
+            <section class="panel__section training">
+              <div class="section-header">
+                <h2>Training Controls</h2>
+                <span class="muted">Coming soon</span>
+              </div>
+              <div class="control-grid">
+                <label>
+                  <span>Iterations</span>
+                  <input type="range" id="train-iterations" min="1000" max="50000" step="1000" value="10000" />
+                </label>
+                <label>
+                  <span>Learning rate</span>
+                  <input type="range" id="train-lr" min="0.001" max="0.05" step="0.001" value="0.01" />
+                </label>
+                <div class="control-actions">
+                  <button id="train-start" class="primary">Start Training</button>
+                  <button id="train-stop" class="secondary">Stop</button>
+                </div>
+              </div>
+            </section>
+
+            <section class="panel__section renderer-controls">
+              <h2>Renderer</h2>
+              <div class="control-grid">
+                <label>
+                  <span>Mode</span>
+                  <select id="render-mode">
+                    <option value="pointcloud">Point cloud preview</option>
+                    <option value="gaussian">Full splat</option>
+                  </select>
+                </label>
+                <label>
+                  <span>Gaussian scale</span>
+                  <input type="range" id="gaussian-scale" min="0" max="1.5" step="0.01" value="1" />
+                </label>
+                <label>
+                  <span>Point size (px)</span>
+                  <input type="range" id="point-size" min="1" max="20" step="1" value="1" />
+                </label>
+                <div class="control-actions">
+                  <button id="enter-renderer" class="primary">Toggle viewer</button>
+                  <span id="renderer-status" class="muted small">Load data to enable the viewer.</span>
+                </div>
+              </div>
+            </section>
+          </div>
+          <div class="panel__body-fade panel__body-fade--bottom"></div>
+        </div>
+      </div>
+      <button id="panel-floating-toggle" class="floating-toggle" aria-label="Open control panel">☰</button>
+    </div>
+    <div id="fps-indicator" class="hud hud--fps">-- fps</div>
+    <div id="control-guide" class="hud hud--controls">
+      <p>Left drag: look around</p>
+      <p>WASD: move, Space/Ctrl: up/down</p>
+      <p>Q/E roll, Scroll: zoom</p>
+    </div>
+
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
