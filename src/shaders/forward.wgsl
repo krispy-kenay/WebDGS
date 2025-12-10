@@ -117,7 +117,7 @@ fn float_to_ordered_uint(x: f32) -> u32 {
 }
 
 @compute @workgroup_size(workgroupSize,1,1)
-fn preprocess(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgroups) wgs: vec3<u32>) {
+fn forward(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgroups) wgs: vec3<u32>) {
     let idx = gid.x;
     //TODO: set up pipeline as described in instruction
     if (idx >= arrayLength(&gaussians)) {

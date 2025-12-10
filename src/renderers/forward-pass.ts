@@ -1,4 +1,4 @@
-import preprocessWGSL from '../shaders/preprocess.wgsl';
+import forwardWGSL from '../shaders/forward.wgsl';
 import commonWGSL from '../shaders/common.wgsl';
 import { get_sorter, C, SortStuff } from '../sort/sort';
 import { PointCloud } from '../utils/load';
@@ -43,7 +43,7 @@ export class ForwardPass {
   private readonly device: GPUDevice;
   private readonly pointCloud: PointCloud;
   private readonly sorter: SortStuff;
-  private readonly preprocessPipeline: GPUComputePipeline;
+  private readonly forwardPipeline: GPUComputePipeline;
   private cameraBindGroup: GPUBindGroup;
   private readonly sceneBindGroup: GPUBindGroup;
   private readonly sortBindGroup: GPUBindGroup;
@@ -100,12 +100,12 @@ export class ForwardPass {
       GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST
     );
 
-    this.preprocessPipeline = device.createComputePipeline({
-      label: 'forward-preprocess',
+    this.forwardPipeline = device.createComputePipeline({
+      label: 'forward',
       layout: 'auto',
       compute: {
-        module: device.createShaderModule({ code: `${commonWGSL}\n${preprocessWGSL}` }),
-        entryPoint: 'preprocess',
+        module: device.createShaderModule({ code: `${commonWGSL}\n${forwardWGSL}` }),
+        entryPoint: 'forward',
         constants: {
           workgroupSize: WORKGROUP_SIZE,
           sortKeyPerThread: (C.histogram_wg_size * C.rs_histogram_block_rows) / WORKGROUP_SIZE,
@@ -117,7 +117,7 @@ export class ForwardPass {
 
     this.sceneBindGroup = device.createBindGroup({
       label: 'forward-scene',
-      layout: this.preprocessPipeline.getBindGroupLayout(1),
+      layout: this.forwardPipeline.getBindGroupLayout(1),
       entries: [
         { binding: 0, resource: { buffer: pointCloud.gaussian_3d_buffer } },
         { binding: 1, resource: { buffer: pointCloud.sh_buffer } },
@@ -127,7 +127,7 @@ export class ForwardPass {
 
     this.sortBindGroup = device.createBindGroup({
       label: 'forward-sort-bindings',
-      layout: this.preprocessPipeline.getBindGroupLayout(2),
+      layout: this.forwardPipeline.getBindGroupLayout(2),
       entries: [
         { binding: 0, resource: { buffer: this.sorter.sort_info_buffer } },
         { binding: 1, resource: { buffer: this.sorter.ping_pong[0].sort_depths_buffer } },
@@ -142,7 +142,7 @@ export class ForwardPass {
     this.device.queue.writeBuffer(this.sorter.sort_dispatch_indirect_buffer, 0, NULLING_DATA);
 
     const pass = encoder.beginComputePass({ label: 'forward-preprocess-pass' });
-    pass.setPipeline(this.preprocessPipeline);
+    pass.setPipeline(this.forwardPipeline);
     pass.setBindGroup(0, this.cameraBindGroup);
     pass.setBindGroup(1, this.sceneBindGroup);
     pass.setBindGroup(2, this.sortBindGroup);
@@ -202,7 +202,7 @@ export class ForwardPass {
   private createCameraBindGroup(cameraBuffer: GPUBuffer): GPUBindGroup {
     return this.device.createBindGroup({
       label: 'forward-camera',
-      layout: this.preprocessPipeline.getBindGroupLayout(0),
+      layout: this.forwardPipeline.getBindGroupLayout(0),
       entries: [
         { binding: 0, resource: { buffer: cameraBuffer } },
         { binding: 1, resource: { buffer: this.settingsBuffer } },
