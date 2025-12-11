@@ -23,13 +23,20 @@ struct Gaussian {
 };
 
 struct Splat {
-    //TODO: store information for 2D splat rendering
     pos : u32,
     radius : u32,
     conic_xy : u32,
     conic_z : u32,
     color_rg : u32,
     color_ba : u32,
+};
+
+// Pipeline statistics buffer for centralized count management
+struct TilePipelineStats {
+    total_tile_entries: u32,
+    visible_gaussians: u32,
+    _pad0: u32,
+    _pad1: u32,
 };
 
 // code adapted from graphdeco-inria/diff-gaussian-rasterization repo

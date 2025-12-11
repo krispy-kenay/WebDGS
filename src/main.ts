@@ -1,6 +1,6 @@
 import './style.css';
-import { ForwardPass, RenderMode } from './renderers/forward-pass';
-import { Rasterizer } from './renderers/rasterizer';
+import { TiledForwardPass, RenderMode } from './renderers/tiled-forward-pass';
+import { TiledRasterizer } from './renderers/tiled-rasterizer';
 import { assert } from './utils/util';
 import { load } from './utils/load';
 import { Camera, load_camera_presets } from './camera/camera';
@@ -36,8 +36,8 @@ const state = {
   presentationFormat: 'bgra8unorm' as GPUTextureFormat,
   camera: null as Camera | null,
   cameraControl: null as CameraControl | null,
-  forwardPass: null as ForwardPass | null,
-  rasterizer: null as Rasterizer | null,
+  forwardPass: null as TiledForwardPass | null,
+  rasterizer: null as TiledRasterizer | null,
   pointCloudLoaded: false,
   camerasLoaded: false,
   renderMode: renderModeSelect.value as RenderMode,
@@ -74,7 +74,10 @@ async function initializeWebGPU(canvas: HTMLCanvasElement, context: GPUCanvasCon
   }
 
   try {
+    const requiredFeatures: GPUFeatureName[] = [];
+
     const device = await adapter.requestDevice({
+      requiredFeatures,
       requiredLimits: {
         maxComputeWorkgroupStorageSize: adapter.limits.maxComputeWorkgroupStorageSize,
         maxStorageBufferBindingSize: adapter.limits.maxStorageBufferBindingSize,
@@ -94,11 +97,11 @@ async function initializeWebGPU(canvas: HTMLCanvasElement, context: GPUCanvasCon
       alphaMode: 'opaque',
     });
 
-  const camera = new Camera(canvas, device);
-  const control = new CameraControl(camera);
-  state.camera = camera;
-  state.cameraControl = control;
-  control.registerKeyboardListeners(window);
+    const camera = new Camera(canvas, device);
+    const control = new CameraControl(camera);
+    state.camera = camera;
+    state.cameraControl = control;
+    control.registerKeyboardListeners(window);
 
     const resizeObserver = new ResizeObserver(() => {
       if (!state.canvas || !state.camera) return;
@@ -234,14 +237,16 @@ function setupUiHandlers() {
 
 function setupForwardPipeline(pointCloud: Awaited<ReturnType<typeof load>>) {
   if (!state.device || !state.camera || !state.canvas) return;
-  state.forwardPass = new ForwardPass(state.device, pointCloud, state.camera.uniform_buffer, {
+  // Using tiled forward pass instead of original
+  state.forwardPass = new TiledForwardPass(state.device, pointCloud, state.camera.uniform_buffer, {
     viewportWidth: state.canvas.width,
     viewportHeight: state.canvas.height,
     gaussianScale: state.gaussianScale,
     pointSizePx: state.pointSize,
     renderMode: state.renderMode,
   });
-  state.rasterizer = new Rasterizer({
+  // Using tiled rasterizer instead of original
+  state.rasterizer = new TiledRasterizer({
     device: state.device,
     forwardPass: state.forwardPass,
     format: state.presentationFormat,
@@ -271,10 +276,13 @@ function startRenderLoop() {
         fpsIndicator.textContent = `${smoothedFps.toFixed(1)} fps`;
         lastFpsLabelUpdate = timestamp;
       }
+
       const encoder = state.device.createCommandEncoder();
       state.forwardPass.encode(encoder);
-      const textureView = state.context.getCurrentTexture().createView();
-      state.rasterizer.encode(encoder, textureView);
+      const swapTexture = state.context.getCurrentTexture();
+      const swapView = swapTexture.createView();
+      state.rasterizer.encode(encoder, swapTexture.width, swapTexture.height);
+      state.rasterizer.blitToTexture(encoder, swapView);
       state.device.queue.submit([encoder.finish()]);
       updateRendererCta(true);
     } else if (fpsIndicator) {
