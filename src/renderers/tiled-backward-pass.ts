@@ -9,6 +9,8 @@ import commonWGSL from '../shaders/common.wgsl';
 import lossWGSL from '../shaders/loss.wgsl';
 import backwardRasterizeWGSL from '../shaders/tiled-backward-rasterize.wgsl';
 import backwardGeometryWGSL from '../shaders/tiled-backward.wgsl';
+import metricMapWGSL from '../shaders/metric-map.wgsl';
+import metricCountWGSL from '../shaders/metric-count.wgsl';
 
 // Constants
 const GEOMETRY_WORKGROUP_SIZE = 64;
@@ -74,6 +76,10 @@ export class TiledBackwardPass {
     private readonly lossPipeline: GPUComputePipeline;
     private readonly backwardRasterizePipeline: GPUComputePipeline;
     private readonly backwardGeometryPipeline: GPUComputePipeline;
+    private readonly metricErrorPipeline: GPUComputePipeline;
+    private readonly metricReducePipeline: GPUComputePipeline;
+    private readonly metricThresholdPipeline: GPUComputePipeline;
+    private readonly metricCountPipeline: GPUComputePipeline;
 
     // Bind Groups
     private lossBindGroup: GPUBindGroup | null = null;
@@ -89,6 +95,22 @@ export class TiledBackwardPass {
 
     // Intermediate
     private lossGradientTexture: GPUTexture;
+    private metricMapTexture: GPUTexture;
+    private metricMapTextureView: GPUTextureView;
+
+    private metricErrorPairsBuffer: GPUBuffer;
+    private metricReduceScratchA: GPUBuffer;
+    private metricReduceScratchB: GPUBuffer;
+    private readonly metricErrorConfigBuffer: GPUBuffer;
+    private readonly metricReduceInfoBuffer: GPUBuffer;
+    private readonly metricThresholdConfigBuffer: GPUBuffer;
+
+    private metricErrorBindGroup0: GPUBindGroup | null = null;
+    private metricErrorBindGroup1: GPUBindGroup;
+    private metricThresholdPairsBindGroup1: GPUBindGroup;
+    private metricThresholdBindGroup3: GPUBindGroup | null = null;
+
+    private readonly metricCountsBuffer: GPUBuffer;
 
     // Settings data
     private readonly settingsData: Float32Array;
@@ -171,6 +193,41 @@ export class TiledBackwardPass {
             compute: { module: lossModule, entryPoint: 'compute_loss_grad' }
         });
 
+        // Metric-map pipelines
+        const metricModule = device.createShaderModule({
+            label: 'metric-map-shader',
+            code: metricMapWGSL
+        });
+
+        this.metricErrorPipeline = device.createComputePipeline({
+            label: 'metric-error',
+            layout: 'auto',
+            compute: { module: metricModule, entryPoint: 'metric_error_main' }
+        });
+
+        this.metricReducePipeline = device.createComputePipeline({
+            label: 'metric-reduce-minmax',
+            layout: 'auto',
+            compute: { module: metricModule, entryPoint: 'metric_reduce_minmax_main' }
+        });
+
+        this.metricThresholdPipeline = device.createComputePipeline({
+            label: 'metric-threshold',
+            layout: 'auto',
+            compute: { module: metricModule, entryPoint: 'metric_threshold_main' }
+        });
+
+        const metricCountModule = device.createShaderModule({
+            label: 'metric-count-shader',
+            code: `${commonWGSL}\n${metricCountWGSL}`
+        });
+
+        this.metricCountPipeline = device.createComputePipeline({
+            label: 'metric-count',
+            layout: 'auto',
+            compute: { module: metricCountModule, entryPoint: 'metric_count_main' }
+        });
+
         // Atomic Buffers
         this.gradMeans2D = createBuffer(device, 'grad-means-2d', this.numPoints * 2 * 4, GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST);
         this.gradConics = createBuffer(device, 'grad-conics', this.numPoints * 4 * 4, GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST);
@@ -179,6 +236,87 @@ export class TiledBackwardPass {
 
         // Output Buffers
         this.outGradientsBuffer = createBuffer(device, 'out-gradients', this.numPoints * 32, GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST);
+
+        // Metric-map resources
+        this.metricMapTexture = device.createTexture({
+            label: 'metric-map-texture',
+            size: { width: config.viewportWidth, height: config.viewportHeight },
+            format: 'r32uint',
+            usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_SRC
+        });
+        this.metricMapTextureView = this.metricMapTexture.createView();
+
+        const pixelCount = Math.max(1, config.viewportWidth * config.viewportHeight);
+
+        this.metricErrorPairsBuffer = createBuffer(
+            device,
+            'metric-error-pairs',
+            pixelCount * 8,
+            GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST
+        );
+
+        const maxReduceCount = Math.max(1, Math.ceil(pixelCount / 256));
+        this.metricReduceScratchA = createBuffer(
+            device,
+            'metric-reduce-scratch-a',
+            maxReduceCount * 8,
+            GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST
+        );
+        this.metricReduceScratchB = createBuffer(
+            device,
+            'metric-reduce-scratch-b',
+            maxReduceCount * 8,
+            GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST
+        );
+
+        this.metricErrorConfigBuffer = createBuffer(
+            device,
+            'metric-error-config',
+            16,
+            GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+            new Float32Array([1_000_000.0, 0, 0, 0])
+        );
+
+        this.metricReduceInfoBuffer = createBuffer(
+            device,
+            'metric-reduce-info',
+            16,
+            GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+            new Uint32Array([pixelCount, 0, 0, 0])
+        );
+
+        this.metricThresholdConfigBuffer = createBuffer(
+            device,
+            'metric-threshold-config',
+            16,
+            GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+            new Float32Array([0.5, 1_000_000.0, 0, 0])
+        );
+
+        this.metricErrorBindGroup1 = device.createBindGroup({
+            label: 'metric-error-bg1',
+            layout: this.metricErrorPipeline.getBindGroupLayout(1),
+            entries: [
+                { binding: 0, resource: { buffer: this.metricErrorConfigBuffer } },
+                { binding: 1, resource: { buffer: this.metricErrorPairsBuffer } }
+            ]
+        });
+
+        this.metricThresholdPairsBindGroup1 = device.createBindGroup({
+            label: 'metric-threshold-pairs-bg1',
+            layout: this.metricThresholdPipeline.getBindGroupLayout(1),
+            entries: [
+                { binding: 1, resource: { buffer: this.metricErrorPairsBuffer } }
+            ]
+        });
+
+        this.metricCountsBuffer = createBuffer(
+            device,
+            'metric-counts',
+            Math.max(1, this.numPoints) * 4,
+            GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST,
+            new Uint32Array(Math.max(1, this.numPoints))
+        );
 
         // Backward Rasterize Pipeline
         const bwRasterizeModule = device.createShaderModule({
@@ -253,6 +391,169 @@ export class TiledBackwardPass {
 
     getLossTextureView(): GPUTextureView {
         return this.lossGradientTexture.createView();
+    }
+
+    getMetricMapTextureView(): GPUTextureView {
+        return this.metricMapTextureView;
+    }
+
+    getMetricMapTexture(): GPUTexture {
+        return this.metricMapTexture;
+    }
+
+    getMetricCountsBuffer(): GPUBuffer {
+        return this.metricCountsBuffer;
+    }
+
+    computeMetricMap(
+        encoder: GPUCommandEncoder,
+        predictedTexture: GPUTextureView,
+        targetTexture: GPUTextureView,
+        options?: { threshold?: number }
+    ): void {
+        const threshold = options?.threshold ?? 0.5;
+
+        this.device.queue.writeBuffer(
+            this.metricThresholdConfigBuffer,
+            0,
+            new Float32Array([threshold, 1_000_000.0, 0, 0])
+        );
+
+        this.metricErrorBindGroup0 = this.device.createBindGroup({
+            label: 'metric-error-bg0',
+            layout: this.metricErrorPipeline.getBindGroupLayout(0),
+            entries: [
+                { binding: 0, resource: predictedTexture },
+                { binding: 1, resource: targetTexture },
+            ]
+        });
+
+        // Error pass
+        {
+            const pass = encoder.beginComputePass({ label: 'metric-error-pass' });
+            pass.setPipeline(this.metricErrorPipeline);
+            pass.setBindGroup(0, this.metricErrorBindGroup0);
+            pass.setBindGroup(1, this.metricErrorBindGroup1);
+            pass.dispatchWorkgroups(
+                Math.ceil(this.viewportWidth / 16),
+                Math.ceil(this.viewportHeight / 16)
+            );
+            pass.end();
+        }
+
+        // Reduce global min/max
+        let count = Math.max(1, this.viewportWidth * this.viewportHeight);
+        let reduceIn = this.metricErrorPairsBuffer;
+        let reduceOut = this.metricReduceScratchA;
+
+        while (count > 1) {
+            const outCount = Math.ceil(count / 256);
+            const infoUpload = this.device.createBuffer({
+                label: 'metric-reduce-info-upload',
+                size: 16,
+                usage: GPUBufferUsage.MAP_WRITE | GPUBufferUsage.COPY_SRC,
+                mappedAtCreation: true
+            });
+            new Uint32Array(infoUpload.getMappedRange()).set([count, 0, 0, 0]);
+            infoUpload.unmap();
+            encoder.copyBufferToBuffer(infoUpload, 0, this.metricReduceInfoBuffer, 0, 16);
+
+            const reduceBindGroup2 = this.device.createBindGroup({
+                label: 'metric-reduce-bg2',
+                layout: this.metricReducePipeline.getBindGroupLayout(2),
+                entries: [
+                    { binding: 0, resource: { buffer: this.metricReduceInfoBuffer } },
+                    { binding: 1, resource: { buffer: reduceIn } },
+                    { binding: 2, resource: { buffer: reduceOut } },
+                ]
+            });
+
+            const pass = encoder.beginComputePass({ label: 'metric-reduce-pass' });
+            pass.setPipeline(this.metricReducePipeline);
+            pass.setBindGroup(2, reduceBindGroup2);
+            pass.dispatchWorkgroups(outCount);
+            pass.end();
+
+            count = outCount;
+            reduceIn = reduceOut;
+            reduceOut = reduceOut === this.metricReduceScratchA ? this.metricReduceScratchB : this.metricReduceScratchA;
+        }
+
+        const minmaxBuffer = reduceIn;
+
+        // Threshold normalized error into a binary metric map
+        this.metricThresholdBindGroup3 = this.device.createBindGroup({
+            label: 'metric-threshold-bg3',
+            layout: this.metricThresholdPipeline.getBindGroupLayout(3),
+            entries: [
+                { binding: 0, resource: { buffer: this.metricThresholdConfigBuffer } },
+                { binding: 1, resource: { buffer: minmaxBuffer } },
+                { binding: 2, resource: this.metricMapTextureView },
+            ]
+        });
+
+        {
+            const pass = encoder.beginComputePass({ label: 'metric-threshold-pass' });
+            pass.setPipeline(this.metricThresholdPipeline);
+            pass.setBindGroup(1, this.metricThresholdPairsBindGroup1);
+            pass.setBindGroup(3, this.metricThresholdBindGroup3);
+            pass.dispatchWorkgroups(
+                Math.ceil(this.viewportWidth / 16),
+                Math.ceil(this.viewportHeight / 16)
+            );
+            pass.end();
+        }
+    }
+
+    computeMetricCounts(
+        encoder: GPUCommandEncoder,
+        resources: Pick<TiledBackwardResources, 'splatBuffer' | 'tileOffsetsBuffer' | 'tileIndicesBuffer' | 'nContribTexture'>,
+        options?: { metricMapTexture?: GPUTextureView; clear?: boolean }
+    ): void {
+        const metricMapTexture = options?.metricMapTexture ?? this.metricMapTextureView;
+        const clear = options?.clear ?? true;
+        if (clear) {
+            encoder.clearBuffer(this.metricCountsBuffer);
+        }
+
+        const bG0 = this.device.createBindGroup({
+            label: 'metric-count-bg0',
+            layout: this.metricCountPipeline.getBindGroupLayout(0),
+            entries: [
+                { binding: 0, resource: { buffer: this.settingsBuffer } },
+            ]
+        });
+
+        const bG1 = this.device.createBindGroup({
+            label: 'metric-count-bg1',
+            layout: this.metricCountPipeline.getBindGroupLayout(1),
+            entries: [
+                { binding: 0, resource: { buffer: resources.tileOffsetsBuffer } },
+                { binding: 1, resource: { buffer: resources.tileIndicesBuffer } },
+                { binding: 2, resource: { buffer: resources.splatBuffer } },
+                { binding: 3, resource: metricMapTexture },
+                { binding: 4, resource: resources.nContribTexture },
+            ]
+        });
+
+        const bG2 = this.device.createBindGroup({
+            label: 'metric-count-bg2',
+            layout: this.metricCountPipeline.getBindGroupLayout(2),
+            entries: [
+                { binding: 0, resource: { buffer: this.metricCountsBuffer } }
+            ]
+        });
+
+        const pass = encoder.beginComputePass({ label: 'metric-count-pass' });
+        pass.setPipeline(this.metricCountPipeline);
+        pass.setBindGroup(0, bG0);
+        pass.setBindGroup(1, bG1);
+        pass.setBindGroup(2, bG2);
+        pass.dispatchWorkgroups(
+            Math.ceil(this.viewportWidth / 16),
+            Math.ceil(this.viewportHeight / 16)
+        );
+        pass.end();
     }
 
     encode(
@@ -420,6 +721,65 @@ export class TiledBackwardPass {
             format: 'rgba32float',
             usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING
         });
+
+        // Resize metric-map resources
+        this.metricMapTexture.destroy();
+        this.metricMapTexture = this.device.createTexture({
+            label: 'metric-map-texture',
+            size: { width, height },
+            format: 'r32uint',
+            usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_SRC
+        });
+        this.metricMapTextureView = this.metricMapTexture.createView();
+
+        const pixelCount = Math.max(1, width * height);
+
+        this.metricErrorPairsBuffer.destroy();
+        this.metricErrorPairsBuffer = this.device.createBuffer({
+            label: 'metric-error-pairs',
+            size: pixelCount * 8,
+            usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST
+        });
+
+        const maxReduceCount = Math.max(1, Math.ceil(pixelCount / 256));
+        this.metricReduceScratchA.destroy();
+        this.metricReduceScratchB.destroy();
+        this.metricReduceScratchA = this.device.createBuffer({
+            label: 'metric-reduce-scratch-a',
+            size: maxReduceCount * 8,
+            usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST
+        });
+        this.metricReduceScratchB = this.device.createBuffer({
+            label: 'metric-reduce-scratch-b',
+            size: maxReduceCount * 8,
+            usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST
+        });
+
+        this.metricErrorBindGroup1 = this.device.createBindGroup({
+            label: 'metric-error-bg1',
+            layout: this.metricErrorPipeline.getBindGroupLayout(1),
+            entries: [
+                { binding: 0, resource: { buffer: this.metricErrorConfigBuffer } },
+                { binding: 1, resource: { buffer: this.metricErrorPairsBuffer } }
+            ]
+        });
+
+        this.metricThresholdPairsBindGroup1 = this.device.createBindGroup({
+            label: 'metric-threshold-pairs-bg1',
+            layout: this.metricThresholdPipeline.getBindGroupLayout(1),
+            entries: [
+                { binding: 1, resource: { buffer: this.metricErrorPairsBuffer } }
+            ]
+        });
+
+        this.metricErrorBindGroup0 = null;
+        this.metricThresholdBindGroup3 = null;
+
+        this.device.queue.writeBuffer(
+            this.metricReduceInfoBuffer,
+            0,
+            new Uint32Array([pixelCount, 0, 0, 0])
+        );
     }
 
     setTrainingConfig(config: Partial<TrainingConfig>): void {
