@@ -45,6 +45,10 @@ export class TiledRasterizer {
     // Output texture
     private outputTexture: GPUTexture | null = null;
     private outputTextureView: GPUTextureView | null = null;
+    private outputAlphaTexture: GPUTexture | null = null;
+    private outputAlphaTextureView: GPUTextureView | null = null;
+    private outputNContribTexture: GPUTexture | null = null;
+    private outputNContribTextureView: GPUTextureView | null = null;
     private viewportWidth: number;
     private viewportHeight: number;
 
@@ -242,6 +246,8 @@ export class TiledRasterizer {
 
         // Destroy old texture
         this.outputTexture?.destroy();
+        this.outputAlphaTexture?.destroy();
+        this.outputNContribTexture?.destroy();
 
         // Create new output texture with storage usage
         this.outputTexture = this.device.createTexture({
@@ -253,12 +259,32 @@ export class TiledRasterizer {
 
         this.outputTextureView = this.outputTexture.createView();
 
+        // Create alpha output texture
+        this.outputAlphaTexture = this.device.createTexture({
+            label: 'tiled-rasterizer-alpha',
+            size: { width, height },
+            format: 'r32float',
+            usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING,
+        });
+        this.outputAlphaTextureView = this.outputAlphaTexture.createView();
+
+        // Create n_contrib output texture
+        this.outputNContribTexture = this.device.createTexture({
+            label: 'tiled-rasterizer-n-contrib',
+            size: { width, height },
+            format: 'r32uint',
+            usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING,
+        });
+        this.outputNContribTextureView = this.outputNContribTexture.createView();
+
         // Recreate output bind group
         this.rasterizeOutputBindGroup = this.device.createBindGroup({
             label: 'rasterize-output',
             layout: this.rasterizePipeline.getBindGroupLayout(2),
             entries: [
                 { binding: 0, resource: this.outputTextureView },
+                { binding: 1, resource: this.outputAlphaTextureView! },
+                { binding: 2, resource: this.outputNContribTextureView! },
             ],
         });
 
@@ -282,6 +308,23 @@ export class TiledRasterizer {
             throw new Error('TiledRasterizer: output texture has not been created yet. Call encode() first.');
         }
         return this.outputTextureView;
+    }
+    getTileOffsetsBuffer(): GPUBuffer {
+        return this.tileOffsetsBuffer;
+    }
+
+    getAlphaTextureView(): GPUTextureView {
+        if (!this.outputAlphaTextureView) {
+            throw new Error('TiledRasterizer: no alpha texture. Call encode() first.');
+        }
+        return this.outputAlphaTextureView;
+    }
+
+    getNContribTextureView(): GPUTextureView {
+        if (!this.outputNContribTextureView) {
+            throw new Error('TiledRasterizer: no n_contrib texture. Call encode() first.');
+        }
+        return this.outputNContribTextureView;
     }
 
     // Method for viewer to blit output texture to target texture

@@ -47,15 +47,11 @@ function get_projection_matrix(znear: number, zfar: number, fov_x: number, fov_y
   p[10] = zfar / (zfar - znear);
   p[11] = -(zfar * znear) / (zfar - znear);
   mat4.transpose(p, p);
-  
   // p[0] = 2.0 * znear / (right - left);
   // p[5] = 2.0 * znear / (top - bottom);
   // p[8] = (right + left) / (right - left);
   // p[9] = (top + bottom) / (top - bottom);
   // p[10] = zfar / (zfar - znear);
-  // p[11] = -(zfar * znear) / (zfar - znear);
-  // p[14] = 1.;
-  // mat4.transpose(p, p);
   return p;
 }
 
@@ -68,8 +64,8 @@ export async function load_camera_presets(file: BlobPart): Promise<CameraPreset[
   const blob = file instanceof Blob ? file : new Blob([file]);
   const arrayBuffer = await new Promise((resolve, reject) => {
     const reader = new FileReader();
-    
-    reader.onload = function(event) {
+
+    reader.onload = function (event) {
       resolve(event.target.result);  // Resolve the promise with the ArrayBuffer
     };
 
@@ -120,12 +116,22 @@ const CANONICAL_FORWARD = vec3.create(0, 0, 1);
 const CANONICAL_RIGHT = vec3.create(1, 0, 0);
 const CANONICAL_UP = vec3.create(0, 1, 0);
 
+import { CameraData } from '../utils/load-camera.ts';
+
 export class Camera {
   constructor(
     public readonly canvas: HTMLCanvasElement,
     private readonly device: GPUDevice,
   ) {
     this.uniform_buffer = create_camera_uniform_buffer(device);
+    this.reset();
+  }
+
+  reset(): void {
+    // Reset position to default (0, 0, 5)
+    vec3.set(0, 0, 5, this.position);
+    mat4.identity(this.rotation);
+    this.fovY = 45 / 180 * Math.PI;
     this.on_update_canvas();
   }
 
@@ -136,17 +142,16 @@ export class Camera {
     this.fovX = focal2fov(focal, this.canvas.width);
     this.viewport[0] = this.canvas.width;
     this.viewport[1] = this.canvas.height;
-    // const viewport_ratio = this.canvas.width / this.canvas.height;
 
     this.update_buffer();
   }
-  
+
   readonly uniform_buffer: GPUBuffer;
-  
+
   position = vec3.create();
   rotation = mat4.create();
   private fovY: number = 45 / 180 * Math.PI;
-  private fovX: number;
+  private fovX: number = 45 / 180 * Math.PI;
   private focal: Vec2 = vec2.create();
   private viewport: Vec2 = vec2.create();
 
@@ -188,10 +193,15 @@ export class Camera {
 
     this.device.queue.writeBuffer(this.uniform_buffer, 0, intermediate_float_32_array);
   }
-  set_preset(preset: CameraPreset): void {
-    vec3.copy(preset.position, this.position);
-    mat4.copy(preset.rotation, this.rotation);
-    this.update_buffer();
+  set_preset(preset: CameraData): void {
+    if (preset.position) vec3.copy(preset.position, this.position);
+    if (preset.rotation) mat4.copy(preset.rotation, this.rotation);
+    if (preset.fx && preset.fy && preset.height) {
+      const fov = 2 * Math.atan(preset.height / (2 * preset.fy));
+      this.fovY = fov;
+    }
+
+    this.on_update_canvas();
   }
 
 };

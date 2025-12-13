@@ -104,5 +104,17 @@ fn covariance2D(cov_3D: array<f32, 6>, mean_view: vec4<f32>, focal: vec2<f32>, v
 	cov[0][0] = cov[0][0] + 0.3;
 	cov[1][1] = cov[1][1] + 0.3;
 	return vec3<f32>(cov[0][0], cov[0][1], cov[1][1]);
+}
 
+// Atomic Float Utilities (Fixed Point)
+const GRAD_SCALE: f32 = 1000000.0;
+
+fn atomicAddFloat(atom: ptr<storage, atomic<i32>, read_write>, value: f32) {
+    let fixed_val = i32(value * GRAD_SCALE);
+    atomicAdd(atom, fixed_val);
+}
+
+fn atomicLoadFloat(atom: ptr<storage, atomic<i32>, read_write>) -> f32 {
+    let fixed_val = atomicLoad(atom);
+    return f32(fixed_val) / GRAD_SCALE;
 }

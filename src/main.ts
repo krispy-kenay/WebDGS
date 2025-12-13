@@ -1,12 +1,14 @@
-import './style.css';
-import { TiledForwardPass, RenderMode } from './renderers/tiled-forward-pass';
-import { TiledRasterizer } from './renderers/tiled-rasterizer';
-import { assert } from './utils/util';
-import { load } from './utils/load';
-import { Camera, load_camera_presets } from './camera/camera';
-import { CameraControl } from './camera/camera-control';
 
-type CameraPreset = Awaited<ReturnType<typeof load_camera_presets>>[number];
+import './style.css';
+import { assert } from './utils/util';
+import { load, CameraData, PointCloud } from './utils/load';
+import { loadCamera } from './utils/load-camera';
+import { loadImages, LoadedImage } from './utils/load-images';
+import { Viewer } from './viewer';
+import { Trainer } from './trainer';
+import { RenderMode } from './renderers/tiled-forward-pass';
+
+type CameraPreset = CameraData;
 type StatusState = 'checking' | 'ready' | 'error';
 
 const statusIndicator = document.getElementById('status-indicator') as HTMLElement;
@@ -17,10 +19,11 @@ const logContainer = document.getElementById('log') as HTMLDivElement;
 const rendererStatus = document.getElementById('renderer-status') as HTMLElement;
 const enterRendererBtn = document.getElementById('enter-renderer') as HTMLButtonElement;
 const renderModeSelect = document.getElementById('render-mode') as HTMLSelectElement;
+const cameraChoiceSelect = document.getElementById('camera-choice') as HTMLSelectElement;
 const gaussianScaleSlider = document.getElementById('gaussian-scale') as HTMLInputElement;
 const pointSizeSlider = document.getElementById('point-size') as HTMLInputElement;
 const plyInput = document.getElementById('ply-input') as HTMLInputElement;
-const colmapInput = document.getElementById('colmap-input') as HTMLInputElement;
+const imagesInput = document.getElementById('images-input') as HTMLInputElement;
 const cameraInput = document.getElementById('camera-input') as HTMLInputElement;
 const trainStartBtn = document.getElementById('train-start') as HTMLButtonElement;
 const trainStopBtn = document.getElementById('train-stop') as HTMLButtonElement;
@@ -33,19 +36,26 @@ const state = {
   device: null as GPUDevice | null,
   context: null as GPUCanvasContext | null,
   canvas: null as HTMLCanvasElement | null,
-  presentationFormat: 'bgra8unorm' as GPUTextureFormat,
-  camera: null as Camera | null,
-  cameraControl: null as CameraControl | null,
-  forwardPass: null as TiledForwardPass | null,
-  rasterizer: null as TiledRasterizer | null,
+
+  viewer: null as Viewer | null,
+  trainer: null as Trainer | null,
+
   pointCloudLoaded: false,
   camerasLoaded: false,
+
   renderMode: renderModeSelect.value as RenderMode,
   gaussianScale: parseFloat(gaussianScaleSlider.value) || 1,
   pointSize: parseFloat(pointSizeSlider.value) || 1,
+
   renderActive: false,
   panelCollapsed: false,
-  cameraPresets: [] as CameraPreset[],
+
+  trainingPresets: [] as CameraPreset[],
+  images: [] as LoadedImage[],
+
+  trainingBusy: false,
+  showLoss: false,
+  currentCameraIndex: -1,
 };
 
 bootstrap();
@@ -86,31 +96,25 @@ async function initializeWebGPU(canvas: HTMLCanvasElement, context: GPUCanvasCon
     state.device = device;
     state.context = context;
     state.canvas = canvas;
-    state.presentationFormat = navigator.gpu.getPreferredCanvasFormat();
+
+    const presentationFormat = navigator.gpu.getPreferredCanvasFormat();
 
     // Ensure canvas matches display pixels
     canvas.width = canvas.clientWidth;
     canvas.height = canvas.clientHeight;
     context.configure({
       device,
-      format: state.presentationFormat,
+      format: presentationFormat,
       alphaMode: 'opaque',
     });
 
-    const camera = new Camera(canvas, device);
-    const control = new CameraControl(camera);
-    state.camera = camera;
-    state.cameraControl = control;
-    control.registerKeyboardListeners(window);
+    // Initialize Viewer
+    state.viewer = new Viewer(device, context, canvas, presentationFormat);
 
-    const resizeObserver = new ResizeObserver(() => {
-      if (!state.canvas || !state.camera) return;
-      state.canvas.width = state.canvas.clientWidth;
-      state.canvas.height = state.canvas.clientHeight;
-      state.camera.on_update_canvas();
-      state.forwardPass?.setViewport(state.canvas.width, state.canvas.height);
-    });
-    resizeObserver.observe(canvas);
+    // Initialize Trainer
+    state.trainer = new Trainer(device);
+
+    state.viewer.cameraControl.registerKeyboardListeners(window);
 
     updateStatus('ready', 'All required WebGPU features available', 'Adapter ready.');
     logMessage('WebGPU initialized. Upload data to begin.', 'success');
@@ -124,31 +128,59 @@ function setupUiHandlers() {
   renderModeSelect.addEventListener('change', (event) => {
     const mode = (event.target as HTMLSelectElement).value as RenderMode;
     state.renderMode = mode;
-    state.forwardPass?.setRenderMode(mode);
+    state.viewer?.setRenderMode(mode);
   });
+
+  cameraChoiceSelect.addEventListener('change', (event) => {
+    const value = parseInt((event.target as HTMLSelectElement).value, 10);
+    if (!state.viewer) return;
+
+    if (value === -1) {
+      state.viewer.camera.reset();
+      logMessage('Viewer camera reset to default.');
+    } else {
+      const preset = state.trainingPresets[value];
+      if (preset) {
+        state.viewer.camera.set_preset(preset);
+        logMessage(`Viewer copied intrinsics from Training Camera ${value}.`);
+      }
+    }
+  });
+
+  const showLossCheckbox = document.getElementById('show-loss') as HTMLInputElement;
+  if (showLossCheckbox) {
+    showLossCheckbox.addEventListener('change', () => {
+      state.showLoss = showLossCheckbox.checked;
+    });
+  }
 
   gaussianScaleSlider.addEventListener('input', (event) => {
     const value = parseFloat((event.target as HTMLInputElement).value);
     state.gaussianScale = value;
-    state.forwardPass?.setGaussianScale(value);
+    state.viewer?.setGaussianScale(value);
   });
 
   pointSizeSlider.addEventListener('input', (event) => {
     const value = parseFloat((event.target as HTMLInputElement).value);
     state.pointSize = value;
-    state.forwardPass?.setPointSize(value);
+    state.viewer?.setPointSize(value);
   });
 
   plyInput.addEventListener('change', async () => {
-    if (!state.device || !state.camera || !state.canvas || !state.context) return;
+    if (!state.device || !state.viewer || !state.trainer) return;
     const file = plyInput.files?.[0];
     if (!file) return;
     logMessage(`Loading ${file.name}…`);
     try {
       const pointCloud = await load(file, state.device);
-      setupForwardPipeline(pointCloud);
-      state.pointCloudLoaded = true;
-      logMessage(`Loaded ${file.name}`, 'success');
+      if ('type' in pointCloud) {
+        state.viewer.setPointCloud(pointCloud);
+        state.trainer.setPointCloud(pointCloud);
+        state.pointCloudLoaded = true;
+        logMessage(`Loaded ${file.name}`, 'success');
+      } else {
+        logMessage('Loaded cameras instead of point cloud?', 'error');
+      }
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unknown error';
       logMessage(`Failed to load ${file.name}: ${message}`, 'error');
@@ -159,19 +191,29 @@ function setupUiHandlers() {
   });
 
   cameraInput.addEventListener('change', async () => {
-    const file = cameraInput.files?.[0];
-    if (!file) return;
-    logMessage(`Loading camera presets from ${file.name}…`);
+    if (!state.device) return;
+    const fileList = cameraInput.files;
+    if (!fileList || fileList.length === 0) return;
+
+    const files = Array.from(fileList);
+
+    logMessage(`Loading camera presets from ${files.length} file(s)...`);
     try {
-      const presets = await load_camera_presets(file);
-      state.cameraPresets = presets;
+      const presets = await loadCamera(files);
+      state.trainingPresets = presets;
       state.camerasLoaded = presets.length > 0;
-      if (state.camera && presets.length > 0) {
-        state.camera.set_preset(presets[0]);
-        logMessage(`Loaded ${presets.length} camera presets`, 'success');
-      } else if (!presets.length) {
-        logMessage('No camera presets found in file.', 'error');
+
+      if (state.trainer) {
+        state.trainer.setDataset(state.trainingPresets, state.images);
       }
+
+      updateCameraDropdown();
+      if (presets.length) {
+        logMessage(`Loaded ${presets.length} training camera presets`, 'success');
+      } else {
+        logMessage('No camera presets found in files.', 'error');
+      }
+
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unknown error';
       logMessage(`Failed to load camera presets: ${message}`, 'error');
@@ -181,15 +223,31 @@ function setupUiHandlers() {
     }
   });
 
-  colmapInput.addEventListener('change', () => {
-    const files = colmapInput.files;
+  imagesInput.addEventListener('change', async () => {
+    const files = imagesInput.files;
     if (!files || files.length === 0) return;
-    logMessage(`Received ${files.length} COLMAP files. Pipeline integration coming soon.`);
+    logMessage(`Loading ${files.length} images...`);
+
+    try {
+      if (!state.device) throw new Error('Device not initialized');
+      const loaded = await loadImages(files, state.device);
+      state.images = loaded;
+
+      if (state.trainer) {
+        state.trainer.setDataset(state.trainingPresets, state.images);
+      }
+
+      logMessage(`Successfully loaded ${loaded.length} images.`, 'success');
+    } catch (error) {
+      logMessage(`Failed to load images: ${error}`, 'error');
+    } finally {
+      imagesInput.value = '';
+    }
   });
 
   enterRendererBtn.addEventListener('click', () => {
     if (!canEnterViewer()) {
-      logMessage('Load a PLY file and camera presets before toggling the viewer.', 'error');
+      logMessage('Load a splat before toggling the viewer.', 'error');
       return;
     }
     state.renderActive = !state.renderActive;
@@ -205,10 +263,15 @@ function setupUiHandlers() {
   });
 
   trainStartBtn.addEventListener('click', () => {
-    logMessage('Training pipeline queued. (Placeholder)', 'success');
+    if (!state.trainer) return;
+    state.trainer.start();
+    logMessage('Training started.', 'success');
   });
+
   trainStopBtn.addEventListener('click', () => {
-    logMessage('Training stopped. (Placeholder)');
+    if (!state.trainer) return;
+    state.trainer.stop();
+    logMessage('Training stopped.');
   });
 
   panelCollapseBtn.addEventListener('click', () => {
@@ -219,38 +282,11 @@ function setupUiHandlers() {
 
   document.addEventListener('keydown', (event) => {
     if (state.renderActive && state.panelCollapsed && !event.repeat) {
-      state.cameraControl?.setEnabled(true);
-    }
-    if (!state.cameraPresets.length || !state.camera) return;
-    if (event.key >= '0' && event.key <= '9') {
-      const idx = parseInt(event.key, 10);
-      const preset = state.cameraPresets[idx];
-      if (preset) {
-        state.camera.set_preset(preset);
-        logMessage(`Camera preset ${idx} selected.`);
-      }
+      state.viewer?.cameraControl.setEnabled(true);
     }
   });
 
   updateRendererCta();
-}
-
-function setupForwardPipeline(pointCloud: Awaited<ReturnType<typeof load>>) {
-  if (!state.device || !state.camera || !state.canvas) return;
-  // Using tiled forward pass instead of original
-  state.forwardPass = new TiledForwardPass(state.device, pointCloud, state.camera.uniform_buffer, {
-    viewportWidth: state.canvas.width,
-    viewportHeight: state.canvas.height,
-    gaussianScale: state.gaussianScale,
-    pointSizePx: state.pointSize,
-    renderMode: state.renderMode,
-  });
-  // Using tiled rasterizer instead of original
-  state.rasterizer = new TiledRasterizer({
-    device: state.device,
-    forwardPass: state.forwardPass,
-    format: state.presentationFormat,
-  });
 }
 
 let smoothedFps = 0;
@@ -258,13 +294,18 @@ let lastFpsLabelUpdate = 0;
 
 function startRenderLoop() {
   let lastFrameTimestamp = 0;
+
   const loop = (timestamp: number) => {
     const deltaSeconds = lastFrameTimestamp > 0 ? (timestamp - lastFrameTimestamp) / 1000 : 0;
-    if (state.cameraControl) {
-      state.cameraControl.setEnabled(state.renderActive && state.panelCollapsed);
-      state.cameraControl.update(deltaSeconds);
+
+    // Viewer update
+    if (state.viewer) {
+      state.viewer.cameraControl.setEnabled(state.renderActive && state.panelCollapsed);
+      state.viewer.update(deltaSeconds);
     }
-    if (state.renderActive && state.forwardPass && state.rasterizer && state.device && state.context) {
+
+    if (state.renderActive && state.viewer && state.device && state.context) {
+      // FPS Stats
       if (lastFrameTimestamp > 0) {
         const delta = timestamp - lastFrameTimestamp;
         if (delta > 0) {
@@ -277,18 +318,29 @@ function startRenderLoop() {
         lastFpsLabelUpdate = timestamp;
       }
 
-      const encoder = state.device.createCommandEncoder();
-      state.forwardPass.encode(encoder);
-      const swapTexture = state.context.getCurrentTexture();
-      const swapView = swapTexture.createView();
-      state.rasterizer.encode(encoder, swapTexture.width, swapTexture.height);
-      state.rasterizer.blitToTexture(encoder, swapView);
-      state.device.queue.submit([encoder.finish()]);
+      // Render Viewer or Loss
+      if (state.showLoss && state.trainer && state.currentCameraIndex >= 0) {
+        state.trainer.visualizeLoss(state.context, state.currentCameraIndex);
+      } else {
+        const encoder = state.device.createCommandEncoder();
+        state.viewer.render(encoder);
+        state.device.queue.submit([encoder.finish()]);
+      }
+
       updateRendererCta(true);
     } else if (fpsIndicator) {
       fpsIndicator.textContent = '-- fps';
       smoothedFps = 0;
     }
+
+    // Trainer Step
+    if (state.trainer && state.trainer.getIsTraining() && !state.trainingBusy) {
+      state.trainingBusy = true;
+      state.trainer.step().finally(() => {
+        state.trainingBusy = false;
+      });
+    }
+
     lastFrameTimestamp = timestamp;
     requestAnimationFrame(loop);
   };
@@ -324,7 +376,7 @@ function updateRendererCta(rendering = false) {
   const ready = canEnterViewer();
   enterRendererBtn.disabled = !ready;
   if (!ready) {
-    rendererStatus.textContent = 'Load a splat and camera data to enable the viewer.';
+    rendererStatus.textContent = 'Load a splat to enable the viewer.';
   } else if (!state.renderActive) {
     rendererStatus.textContent = 'Viewer ready. Toggle to start.';
   } else if (rendering) {
@@ -335,7 +387,7 @@ function updateRendererCta(rendering = false) {
 }
 
 function canEnterViewer() {
-  return Boolean(state.forwardPass && state.camerasLoaded);
+  return Boolean(state.pointCloudLoaded && state.viewer);
 }
 
 function setPanelCollapsed(collapsed: boolean) {
@@ -344,5 +396,22 @@ function setPanelCollapsed(collapsed: boolean) {
   const disableOverlay = collapsed && state.renderActive;
   document.body.classList.toggle('panel-collapsed', disableOverlay);
   panelFloatingToggle.classList.toggle('visible', collapsed && state.renderActive);
-  state.cameraControl?.setEnabled(state.renderActive && collapsed);
+  state.viewer?.cameraControl.setEnabled(state.renderActive && collapsed);
+}
+
+function updateCameraDropdown() {
+  cameraChoiceSelect.innerHTML = '';
+
+  const defaultOpt = document.createElement('option');
+  defaultOpt.value = '-1';
+  defaultOpt.textContent = 'Default Camera';
+  cameraChoiceSelect.appendChild(defaultOpt);
+
+  state.trainingPresets.forEach((preset, index) => {
+    const opt = document.createElement('option');
+    opt.value = index.toString();
+    const name = preset.img_name ? preset.img_name : `Camera ${index}`;
+    opt.textContent = name;
+    cameraChoiceSelect.appendChild(opt);
+  });
 }

@@ -50,6 +50,8 @@ struct TilePipelineStats {
 @group(1) @binding(4) var<storage, read> pipeline_stats: TilePipelineStats;
 
 @group(2) @binding(0) var output_texture: texture_storage_2d<rgba8unorm, write>;
+@group(2) @binding(1) var output_alpha: texture_storage_2d<r32float, write>;
+@group(2) @binding(2) var output_n_contrib: texture_storage_2d<r32uint, write>;
 
 
 const BACKGROUND_COLOR = vec4<f32>(0.0, 0.0, 0.0, 1.0);
@@ -113,6 +115,9 @@ fn tiled_rasterize(
     var accum_alpha = 0.0;
     var entries_processed = 0u;
     var still_processing = tile_has_data;
+    // Number of gaussians processed up to the last contributing gaussian
+    var processed_in_tile = 0u;
+    var last_contributor = 0u;
     
     // Fixed iteration count
     for (var batch = 0u; batch < MAX_BATCHES; batch++) {
@@ -187,9 +192,7 @@ fn tiled_rasterize(
                     continue;
                 }
 
-                if accum_alpha > 0.99 {
-                    continue;
-                }
+                processed_in_tile += 1u;
 
                 let shared_splat = shared_splats[i];
                 let delta = pixel - shared_splat.center_px;
@@ -201,7 +204,12 @@ fn tiled_rasterize(
                     if dist_sq <= limit * limit {
                         accum_color = vec3<f32>(1.0, 1.0, 0.0);
                         accum_alpha = 1.0;
+                        last_contributor = processed_in_tile;
                     }
+                    continue;
+                }
+
+                if accum_alpha > 0.99 {
                     continue;
                 }
                 
@@ -211,10 +219,13 @@ fn tiled_rasterize(
 
                 let gaussian_weight = exp(-0.5 * exp_q);
                 let alpha = clamp(gaussian_weight * shared_splat.opacity, 0.0, 0.99);
-                
+
                 let vis = 1.0 - accum_alpha;
                 accum_color += shared_splat.color * alpha * vis;
                 accum_alpha += alpha * vis;
+                if (alpha >= (1.0 / 255.0)) {
+                    last_contributor = processed_in_tile;
+                }
             }
         }
         
@@ -232,6 +243,19 @@ fn tiled_rasterize(
             output_texture,
             vec2<i32>(i32(pixel_x), i32(pixel_y)),
             vec4<f32>(final_color, 1.0)
+        );
+        
+        // Write resources for backward pass
+        textureStore(
+            output_alpha,
+            vec2<i32>(i32(pixel_x), i32(pixel_y)),
+            vec4<f32>(1.0 - accum_alpha, 0.0, 0.0, 0.0)
+        );
+        
+        textureStore(
+            output_n_contrib,
+            vec2<i32>(i32(pixel_x), i32(pixel_y)),
+            vec4<u32>(last_contributor, 0u, 0u, 0u)
         );
     }
 }

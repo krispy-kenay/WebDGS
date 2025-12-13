@@ -29,3 +29,9 @@ fn fs_main(in: VSOut) -> @location(0) vec4<f32> {
     let color = textureSample(srcTex, srcSampler, in.uv);
     return color;
 }
+
+@fragment
+fn fs_abs(in: VSOut) -> @location(0) vec4<f32> {
+    let color = textureSample(srcTex, srcSampler, in.uv);
+    return vec4<f32>(abs(color.rgb), 1.0);
+}

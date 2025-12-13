@@ -40,6 +40,8 @@ export interface TiledForwardResources {
     numTilesY: number;
     totalTiles: number;
     maxTileEntries: number;
+    tileOffsetsBuffer: GPUBuffer;
+    tileCountsBuffer: GPUBuffer;
 }
 
 export interface TiledForwardPassOptions {
@@ -431,6 +433,8 @@ export class TiledForwardPass {
             numTilesY: this.numTilesY,
             totalTiles: this.totalTiles,
             maxTileEntries: this.maxTileEntries,
+            tileOffsetsBuffer: this.tileOffsetsBuffer,
+            tileCountsBuffer: this.tileCountsBuffer,
         };
     }
 
