@@ -26,6 +26,7 @@ export interface TiledForwardPassConfig {
     viewportHeight: number;
     gaussianScale?: number;
     pointSizePx?: number;
+    maxSplatRadiusPx?: number;
     renderMode?: RenderMode;
 }
 
@@ -114,6 +115,8 @@ export class TiledForwardPass {
     // Render mode
     private renderMode: RenderMode;
 
+    private destroyed = false;
+
     constructor(
         device: GPUDevice,
         pointCloud: PointCloud,
@@ -174,7 +177,8 @@ export class TiledForwardPass {
             config.viewportWidth,
             config.viewportHeight,
             config.pointSizePx ?? 3.0,
-            this.renderMode === 'gaussian' ? 1.0 : 0.0
+            this.renderMode === 'gaussian' ? 1.0 : 0.0,
+            config.maxSplatRadiusPx ?? 128.0,
         ]);
         this.settingsBuffer = createBuffer(
             device, 'settings', this.settingsData.byteLength,
@@ -509,5 +513,22 @@ export class TiledForwardPass {
             0,
             new Uint32Array([scatter_blocks_ru, 1, 1])
         );
+    }
+
+    destroy(): void {
+        if (this.destroyed) return;
+        this.destroyed = true;
+
+        this.splatBuffer.destroy();
+        this.depthsBuffer.destroy();
+        this.tileCountsBuffer.destroy();
+        this.tileOffsetsBuffer.destroy();
+        this.settingsBuffer.destroy();
+        this.tileInfoBuffer.destroy();
+        this.pipelineStatsBuffer.destroy();
+        this.numGaussiansBuffer.destroy();
+
+        this.prefixScanner.destroy();
+        this.sorter.destroy();
     }
 }

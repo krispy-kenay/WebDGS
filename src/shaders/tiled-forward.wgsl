@@ -35,6 +35,11 @@ fn to_f16_precision(v: vec2<f32>) -> vec2<f32> {
     return unpack2x16float(pack2x16float(v));
 }
 
+fn clamp_finite(v: vec2<f32>, limit: f32) -> vec2<f32> {
+    // Avoid infinities/NaNs turning into undefined f16 packing behavior.
+    return clamp(v, vec2<f32>(-limit), vec2<f32>(limit));
+}
+
 struct TileInfo {
     num_tiles_x: u32,
     num_tiles_y: u32,
@@ -224,13 +229,26 @@ fn count_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     // Compute bounding box with tight bounds using SnugBox extents
     let x_extent = sqrt(t * conic.z / (-disc));
     let y_extent = sqrt(t * conic.x / (-disc));
-    let ndc_clamped = clamp(gaussian_ndc.xy, vec2<f32>(-1.0), vec2<f32>(1.0));
-    let ndc_f16 = to_f16_precision(ndc_clamped);
-    let pixel_center = (ndc_f16 * vec2<f32>(0.5, -0.5) + 0.5) * viewport;
+    let cap = select(1e9, settings.max_splat_radius_px, settings.max_splat_radius_px > 0.0);
+    let x_extent_cap = min(x_extent, cap);
+    let y_extent_cap = min(y_extent, cap);
+    // Store unclamped NDC center to avoid the snapping to border issue
+    let ndc_store = to_f16_precision(clamp_finite(gaussian_ndc.xy, 60000.0));
+    let pixel_center = (ndc_store * vec2<f32>(0.5, -0.5) + 0.5) * viewport;
     let tile_margin = 2.0; 
-    let extents_f16 = to_f16_precision(vec2<f32>(x_extent, y_extent));
-    let bbox_min = max(pixel_center - extents_f16 - tile_margin, vec2<f32>(0.0));
-    let bbox_max = min(pixel_center + extents_f16 + tile_margin, viewport - vec2<f32>(1.0));
+    let extents_f16 = to_f16_precision(vec2<f32>(x_extent_cap, y_extent_cap));
+    let bbox_min_raw = pixel_center - extents_f16 - tile_margin;
+    let bbox_max_raw = pixel_center + extents_f16 + tile_margin;
+
+    // reject if bbox does not intersect the viewport (before clamping)
+    if (bbox_max_raw.x < 0.0 || bbox_max_raw.y < 0.0 ||
+        bbox_min_raw.x >= viewport.x || bbox_min_raw.y >= viewport.y) {
+        return;
+    }
+
+    // Clamp only for tile coordinate conversion
+    let bbox_min = max(bbox_min_raw, vec2<f32>(0.0));
+    let bbox_max = min(bbox_max_raw, viewport - vec2<f32>(1.0));
     
     // Skip if bounding box is invalid
     if (bbox_max.x < bbox_min.x || bbox_max.y < bbox_min.y) {
@@ -259,8 +277,8 @@ fn count_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     }
 
     // Write data
-    splats[idx].pos = pack2x16float(clamp(gaussian_ndc.xy, vec2<f32>(-1.0), vec2<f32>(1.0)));
-    splats[idx].radius = pack2x16float(vec2<f32>(x_extent, y_extent)); // Store both extents
+    splats[idx].pos = pack2x16float(ndc_store);
+    splats[idx].radius = pack2x16float(vec2<f32>(x_extent_cap, y_extent_cap));
     splats[idx].conic_xy = pack2x16float(conic.xy);
     splats[idx].conic_z = pack2x16float(vec2<f32>(conic.z, 0.0));
     splats[idx].color_rg = pack2x16float(clamp(color.rg, vec2<f32>(0.0), vec2<f32>(1.0)));
@@ -291,7 +309,9 @@ fn emit_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let start_offset = tile_offsets[idx];
     
     let pos_packed = unpack2x16float(splats[idx].pos);
-    let extents = unpack2x16float(splats[idx].radius);
+    let extents_raw = unpack2x16float(splats[idx].radius);
+    let cap = select(1e9, settings.max_splat_radius_px, settings.max_splat_radius_px > 0.0);
+    let extents = min(extents_raw, vec2<f32>(cap));
     
     let ndc_pos = pos_packed;
 
@@ -300,8 +320,16 @@ fn emit_main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
     // Use both extents for tight bounding box
     let tile_margin = 2.0;
-    let bbox_min = max(pixel_center - extents - tile_margin, vec2<f32>(0.0));
-    let bbox_max = min(pixel_center + extents + tile_margin, viewport - vec2<f32>(1.0));
+    let bbox_min_raw = pixel_center - extents - tile_margin;
+    let bbox_max_raw = pixel_center + extents + tile_margin;
+
+    if (bbox_max_raw.x < 0.0 || bbox_max_raw.y < 0.0 ||
+        bbox_min_raw.x >= viewport.x || bbox_min_raw.y >= viewport.y) {
+        return;
+    }
+
+    let bbox_min = max(bbox_min_raw, vec2<f32>(0.0));
+    let bbox_max = min(bbox_max_raw, viewport - vec2<f32>(1.0));
 
     let tile_min_x = u32(bbox_min.x) / tileWidth;
     let tile_min_y = u32(bbox_min.y) / tileHeight;
@@ -324,4 +352,3 @@ fn emit_main(@builtin(global_invocation_id) gid: vec3<u32>) {
         }
     }
 }
-

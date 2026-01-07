@@ -52,6 +52,8 @@ export class TiledRasterizer {
     private viewportWidth: number;
     private viewportHeight: number;
 
+    private destroyed = false;
+
     constructor(config: TiledRasterizerConfig) {
         const { device, forwardPass, format } = config;
         this.device = device;
@@ -352,5 +354,15 @@ export class TiledRasterizer {
         pass.setBindGroup(0, this.blitBindGroup);
         pass.draw(3, 1, 0, 0);
         pass.end();
+    }
+
+    destroy(): void {
+        if (this.destroyed) return;
+        this.destroyed = true;
+
+        this.outputTexture?.destroy();
+        this.outputAlphaTexture?.destroy();
+        this.outputNContribTexture?.destroy();
+        this.tileOffsetsBuffer.destroy();
     }
 }

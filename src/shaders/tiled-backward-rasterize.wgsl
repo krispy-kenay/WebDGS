@@ -87,14 +87,21 @@ fn backward_rasterize_main(@builtin(global_invocation_id) global_id: vec3<u32>, 
         let conic_z = unpack2x16float(splat.conic_z);
         let color_rg = unpack2x16float(splat.color_rg);
         let color_ba = unpack2x16float(splat.color_ba);
+        let extents_raw = unpack2x16float(splat.radius);
         
         let center_px = (pos_ndc * vec2<f32>(0.5, -0.5) + 0.5) * viewport;
         let conic = vec3<f32>(conic_xy.x, conic_xy.y, conic_z.x);
         let color = vec3<f32>(color_rg.x, color_rg.y, color_ba.x);
         let opacity = color_ba.y;
+        let cap = select(1e9, settings.max_splat_radius_px, settings.max_splat_radius_px > 0.0);
+        let extents = min(extents_raw, vec2<f32>(cap));
 
         // Forward Eval
         let delta = pixf - center_px; 
+
+        if (abs(delta.x) > extents.x || abs(delta.y) > extents.y) {
+            continue;
+        }
         
         // Power calculation
         let power = (conic.x * delta.x * delta.x) + 

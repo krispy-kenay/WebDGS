@@ -13,6 +13,7 @@ export interface ForwardPassConfig {
   viewportHeight: number;
   gaussianScale?: number;
   pointSizePx?: number;
+  maxSplatRadiusPx?: number;
   renderMode?: RenderMode;
 }
 
@@ -74,6 +75,7 @@ export class ForwardPass {
       config.viewportHeight,
       config.pointSizePx ?? 3,
       this.renderMode === 'gaussian' ? 1 : 0,
+      config.maxSplatRadiusPx ?? 128,
     ]);
 
     this.settingsBuffer = createBuffer(

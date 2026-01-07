@@ -1,8 +1,41 @@
 import { PointCloud } from '../utils/load';
 import adamWGSL from '../shaders/adam.wgsl';
 import updateGaussiansWGSL from '../shaders/update-gaussians.wgsl';
-import { AdamHyperparameters } from './adam-config';
+import { AdamHyperparameters, DEFAULT_ADAM_HYPERPARAMETERS } from './adam-config';
 import { TiledBackwardResources } from './tiled-backward-pass';
+
+export const OPTIMIZER_LAYOUT = {
+    OPT_VEC4_BYTES: 48,
+    OPT_FLOAT_BYTES: 12,
+    SH_FLOATS_PER_POINT: 48,
+} as const;
+
+export interface OptimizerStateBuffers {
+    optPosBuffer: GPUBuffer;
+    optRotBuffer: GPUBuffer;
+    optScaleBuffer: GPUBuffer;
+    optOpacityBuffer: GPUBuffer;
+    paramSH: GPUBuffer;
+    stateSH: GPUBuffer;
+}
+
+export interface OptimizerInitialState {
+    iteration?: number;
+    buffers: OptimizerStateBuffers;
+}
+
+export function allocateOptimizerStateBuffers(device: GPUDevice, numPoints: number): OptimizerStateBuffers {
+    const N = Math.max(1, Math.floor(numPoints));
+    const usage = GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC;
+    return {
+        optPosBuffer: device.createBuffer({ label: 'opt-pos', size: N * OPTIMIZER_LAYOUT.OPT_VEC4_BYTES, usage }),
+        optRotBuffer: device.createBuffer({ label: 'opt-rot', size: N * OPTIMIZER_LAYOUT.OPT_VEC4_BYTES, usage }),
+        optScaleBuffer: device.createBuffer({ label: 'opt-scale', size: N * OPTIMIZER_LAYOUT.OPT_VEC4_BYTES, usage }),
+        optOpacityBuffer: device.createBuffer({ label: 'opt-opacity', size: N * OPTIMIZER_LAYOUT.OPT_FLOAT_BYTES, usage }),
+        paramSH: device.createBuffer({ label: 'param-sh', size: N * OPTIMIZER_LAYOUT.SH_FLOATS_PER_POINT * 4, usage }),
+        stateSH: device.createBuffer({ label: 'state-sh', size: N * OPTIMIZER_LAYOUT.SH_FLOATS_PER_POINT * 2 * 4, usage }),
+    };
+}
 
 export class Optimizer {
     private readonly device: GPUDevice;
@@ -33,25 +66,30 @@ export class Optimizer {
 
     private updateInputsBindGroup: GPUBindGroup;
 
-    constructor(device: GPUDevice, pointCloud: PointCloud, params?: Partial<AdamHyperparameters>) {
+    private destroyed = false;
+
+    constructor(device: GPUDevice, pointCloud: PointCloud, params?: Partial<AdamHyperparameters>, initialState?: OptimizerInitialState) {
         this.device = device;
         this.numPoints = pointCloud.num_points;
 
         // Defaults
         this.params = {
-            lr_pos: 0.00016,
-            lr_color: 0.0025,
-            lr_opacity: 0.05,
-            lr_scale: 0.005,
-            lr_rot: 0.001,
-            beta1: 0.9,
-            beta2: 0.999,
-            epsilon: 1e-8,
+            ...DEFAULT_ADAM_HYPERPARAMETERS,
             ...params
         };
 
-        // Initialize f32 buffers from point cloud data
-        this.initBuffers(pointCloud);
+        if (initialState?.buffers) {
+            this.iteration = initialState.iteration ?? 0;
+            this.optPosBuffer = initialState.buffers.optPosBuffer;
+            this.optRotBuffer = initialState.buffers.optRotBuffer;
+            this.optScaleBuffer = initialState.buffers.optScaleBuffer;
+            this.optOpacityBuffer = initialState.buffers.optOpacityBuffer;
+            this.paramSH = initialState.buffers.paramSH;
+            this.stateSH = initialState.buffers.stateSH;
+        } else {
+            // Initialize f32 buffers from point cloud data
+            this.initBuffers(pointCloud);
+        }
 
         // Create Shaders/Pipelines
         const adamModule = device.createShaderModule({
@@ -115,14 +153,14 @@ export class Optimizer {
         const usage = GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC;
 
         // Calculate sizes for interleaved buffers
-        this.optPosBuffer = this.device.createBuffer({ size: N * 48, usage });
-        this.optRotBuffer = this.device.createBuffer({ size: N * 48, usage });
-        this.optScaleBuffer = this.device.createBuffer({ size: N * 48, usage });
-        this.optOpacityBuffer = this.device.createBuffer({ size: N * 12, usage });
+        this.optPosBuffer = this.device.createBuffer({ size: N * OPTIMIZER_LAYOUT.OPT_VEC4_BYTES, usage });
+        this.optRotBuffer = this.device.createBuffer({ size: N * OPTIMIZER_LAYOUT.OPT_VEC4_BYTES, usage });
+        this.optScaleBuffer = this.device.createBuffer({ size: N * OPTIMIZER_LAYOUT.OPT_VEC4_BYTES, usage });
+        this.optOpacityBuffer = this.device.createBuffer({ size: N * OPTIMIZER_LAYOUT.OPT_FLOAT_BYTES, usage });
 
         // SH separate
-        this.paramSH = this.device.createBuffer({ size: N * 48 * 4, usage }); // f32
-        this.stateSH = this.device.createBuffer({ size: N * 48 * 2 * 4, usage }); // 2x f32
+        this.paramSH = this.device.createBuffer({ size: N * OPTIMIZER_LAYOUT.SH_FLOATS_PER_POINT * 4, usage }); // f32
+        this.stateSH = this.device.createBuffer({ size: N * OPTIMIZER_LAYOUT.SH_FLOATS_PER_POINT * 2 * 4, usage }); // 2x f32
 
         // Dispatch Unpacker
         const unpackCode = `
@@ -215,6 +253,30 @@ export class Optimizer {
         this.device.queue.submit([encoder.finish()]);
     }
 
+    getIteration(): number {
+        return this.iteration;
+    }
+
+    getHyperparameters(): Readonly<AdamHyperparameters> {
+        return this.params;
+    }
+
+    setHyperparameters(next: Partial<AdamHyperparameters>): void {
+        this.params = { ...this.params, ...next };
+        this.updateConfigBuffer();
+    }
+
+    getStateBuffers(): OptimizerStateBuffers {
+        return {
+            optPosBuffer: this.optPosBuffer,
+            optRotBuffer: this.optRotBuffer,
+            optScaleBuffer: this.optScaleBuffer,
+            optOpacityBuffer: this.optOpacityBuffer,
+            paramSH: this.paramSH,
+            stateSH: this.stateSH,
+        };
+    }
+
     private updateConfigBuffer() {
         const data = new Float32Array([
             this.params.lr_pos,
@@ -285,5 +347,17 @@ export class Optimizer {
             pass.dispatchWorkgroups(Math.ceil(this.numPoints / 256));
             pass.end();
         }
+    }
+
+    destroy(): void {
+        if (this.destroyed) return;
+        this.destroyed = true;
+        this.configBuffer.destroy();
+        this.optPosBuffer.destroy();
+        this.optRotBuffer.destroy();
+        this.optScaleBuffer.destroy();
+        this.optOpacityBuffer.destroy();
+        this.paramSH.destroy();
+        this.stateSH.destroy();
     }
 }

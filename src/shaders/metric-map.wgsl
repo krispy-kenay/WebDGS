@@ -43,16 +43,8 @@ fn metric_error_main(@builtin(global_invocation_id) gid: vec3<u32>) {
   error_pairs[idx] = vec2<u32>(v, v);
 }
 
-struct ReduceInfo {
-  count: u32,
-  _pad0: u32,
-  _pad1: u32,
-  _pad2: u32,
-};
-
-@group(2) @binding(0) var<uniform> reduce_info: ReduceInfo;
-@group(2) @binding(1) var<storage, read> reduce_in: array<vec2<u32>>;
-@group(2) @binding(2) var<storage, read_write> reduce_out: array<vec2<u32>>;
+@group(2) @binding(0) var<storage, read> reduce_in: array<vec2<u32>>;
+@group(2) @binding(1) var<storage, read_write> reduce_out: array<vec2<u32>>;
 
 const REDUCE_WG_SIZE: u32 = 256u;
 var<workgroup> shared_pairs: array<vec2<u32>, REDUCE_WG_SIZE>;
@@ -65,8 +57,9 @@ fn metric_reduce_minmax_main(
   let local_idx = lid.x;
   let global_idx = wg_id.x * REDUCE_WG_SIZE + local_idx;
 
+  let count = arrayLength(&reduce_in);
   var v = vec2<u32>(0xFFFFFFFFu, 0u);
-  if (global_idx < reduce_info.count) {
+  if (global_idx < count) {
     v = reduce_in[global_idx];
   }
   shared_pairs[local_idx] = v;
@@ -122,4 +115,3 @@ fn metric_threshold_main(@builtin(global_invocation_id) gid: vec3<u32>) {
   let flag = select(0u, 1u, norm > threshold_config.threshold);
   textureStore(output_metric_map, vec2<i32>(i32(gid.x), i32(gid.y)), vec4<u32>(flag, 0u, 0u, 0u));
 }
-

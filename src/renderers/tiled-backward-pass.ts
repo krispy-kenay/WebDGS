@@ -11,6 +11,7 @@ import backwardRasterizeWGSL from '../shaders/tiled-backward-rasterize.wgsl';
 import backwardGeometryWGSL from '../shaders/tiled-backward.wgsl';
 import metricMapWGSL from '../shaders/metric-map.wgsl';
 import metricCountWGSL from '../shaders/metric-count.wgsl';
+import metricNormalizeWGSL from '../shaders/metric-normalize.wgsl';
 
 // Constants
 const GEOMETRY_WORKGROUP_SIZE = 64;
@@ -29,6 +30,7 @@ export interface TiledBackwardPassConfig {
     trainingConfig: TrainingConfig;
     gaussianScale?: number;
     pointSizePx?: number;
+    maxSplatRadiusPx?: number;
 }
 
 export interface TiledBackwardResources {
@@ -80,6 +82,7 @@ export class TiledBackwardPass {
     private readonly metricReducePipeline: GPUComputePipeline;
     private readonly metricThresholdPipeline: GPUComputePipeline;
     private readonly metricCountPipeline: GPUComputePipeline;
+    private readonly metricNormalizePipeline: GPUComputePipeline;
 
     // Bind Groups
     private lossBindGroup: GPUBindGroup | null = null;
@@ -102,8 +105,8 @@ export class TiledBackwardPass {
     private metricReduceScratchA: GPUBuffer;
     private metricReduceScratchB: GPUBuffer;
     private readonly metricErrorConfigBuffer: GPUBuffer;
-    private readonly metricReduceInfoBuffer: GPUBuffer;
     private readonly metricThresholdConfigBuffer: GPUBuffer;
+    private readonly metricNormalizeInfoBuffer: GPUBuffer;
 
     private metricErrorBindGroup0: GPUBindGroup | null = null;
     private metricErrorBindGroup1: GPUBindGroup;
@@ -128,6 +131,8 @@ export class TiledBackwardPass {
     private readonly numWorkgroups: number;
     private readonly numPoints: number;
 
+    private destroyed = false;
+
     constructor(
         device: GPUDevice,
         pointCloud: PointCloud,
@@ -149,7 +154,8 @@ export class TiledBackwardPass {
             config.viewportWidth,
             config.viewportHeight,
             config.pointSizePx ?? 3.0,
-            0.0
+            0.0,
+            config.maxSplatRadiusPx ?? 128.0,
         ]);
         this.settingsBuffer = createBuffer(
             device, 'backward-settings', this.settingsData.byteLength,
@@ -228,6 +234,17 @@ export class TiledBackwardPass {
             compute: { module: metricCountModule, entryPoint: 'metric_count_main' }
         });
 
+        const metricNormalizeModule = device.createShaderModule({
+            label: 'metric-normalize-shader',
+            code: metricNormalizeWGSL
+        });
+
+        this.metricNormalizePipeline = device.createComputePipeline({
+            label: 'metric-normalize',
+            layout: 'auto',
+            compute: { module: metricNormalizeModule, entryPoint: 'metric_normalize_main' }
+        });
+
         // Atomic Buffers
         this.gradMeans2D = createBuffer(device, 'grad-means-2d', this.numPoints * 2 * 4, GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST);
         this.gradConics = createBuffer(device, 'grad-conics', this.numPoints * 4 * 4, GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST);
@@ -277,20 +294,20 @@ export class TiledBackwardPass {
             new Float32Array([1_000_000.0, 0, 0, 0])
         );
 
-        this.metricReduceInfoBuffer = createBuffer(
-            device,
-            'metric-reduce-info',
-            16,
-            GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-            new Uint32Array([pixelCount, 0, 0, 0])
-        );
-
         this.metricThresholdConfigBuffer = createBuffer(
             device,
             'metric-threshold-config',
             16,
             GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
             new Float32Array([0.5, 1_000_000.0, 0, 0])
+        );
+
+        this.metricNormalizeInfoBuffer = createBuffer(
+            device,
+            'metric-normalize-info',
+            16,
+            GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+            new Uint32Array([this.numPoints, 1, 0, 0])
         );
 
         this.metricErrorBindGroup1 = device.createBindGroup({
@@ -448,23 +465,12 @@ export class TiledBackwardPass {
 
         while (count > 1) {
             const outCount = Math.ceil(count / 256);
-            const infoUpload = this.device.createBuffer({
-                label: 'metric-reduce-info-upload',
-                size: 16,
-                usage: GPUBufferUsage.MAP_WRITE | GPUBufferUsage.COPY_SRC,
-                mappedAtCreation: true
-            });
-            new Uint32Array(infoUpload.getMappedRange()).set([count, 0, 0, 0]);
-            infoUpload.unmap();
-            encoder.copyBufferToBuffer(infoUpload, 0, this.metricReduceInfoBuffer, 0, 16);
-
             const reduceBindGroup2 = this.device.createBindGroup({
                 label: 'metric-reduce-bg2',
                 layout: this.metricReducePipeline.getBindGroupLayout(2),
                 entries: [
-                    { binding: 0, resource: { buffer: this.metricReduceInfoBuffer } },
-                    { binding: 1, resource: { buffer: reduceIn } },
-                    { binding: 2, resource: { buffer: reduceOut } },
+                    { binding: 0, resource: { buffer: reduceIn, offset: 0, size: count * 8 } },
+                    { binding: 1, resource: { buffer: reduceOut, offset: 0, size: outCount * 8 } },
                 ]
             });
 
@@ -553,6 +559,33 @@ export class TiledBackwardPass {
             Math.ceil(this.viewportWidth / 16),
             Math.ceil(this.viewportHeight / 16)
         );
+        pass.end();
+    }
+
+    normalizeMetricCounts(
+        encoder: GPUCommandEncoder,
+        options: { divisor: number }
+    ): void {
+        const divisor = Math.max(1, Math.floor(options.divisor));
+        this.device.queue.writeBuffer(
+            this.metricNormalizeInfoBuffer,
+            0,
+            new Uint32Array([this.numPoints, divisor, 0, 0])
+        );
+
+        const bG0 = this.device.createBindGroup({
+            label: 'metric-normalize-bg0',
+            layout: this.metricNormalizePipeline.getBindGroupLayout(0),
+            entries: [
+                { binding: 0, resource: { buffer: this.metricNormalizeInfoBuffer } },
+                { binding: 1, resource: { buffer: this.metricCountsBuffer } },
+            ]
+        });
+
+        const pass = encoder.beginComputePass({ label: 'metric-normalize-pass' });
+        pass.setPipeline(this.metricNormalizePipeline);
+        pass.setBindGroup(0, bG0);
+        pass.dispatchWorkgroups(Math.ceil(this.numPoints / 256));
         pass.end();
     }
 
@@ -774,12 +807,6 @@ export class TiledBackwardPass {
 
         this.metricErrorBindGroup0 = null;
         this.metricThresholdBindGroup3 = null;
-
-        this.device.queue.writeBuffer(
-            this.metricReduceInfoBuffer,
-            0,
-            new Uint32Array([pixelCount, 0, 0, 0])
-        );
     }
 
     setTrainingConfig(config: Partial<TrainingConfig>): void {
@@ -804,5 +831,31 @@ export class TiledBackwardPass {
 
     getGradientsBuffer(): GPUBuffer {
         return this.outGradientsBuffer;
+    }
+
+    destroy(): void {
+        if (this.destroyed) return;
+        this.destroyed = true;
+
+        this.gradMeans2D.destroy();
+        this.gradConics.destroy();
+        this.gradOpacity.destroy();
+        this.gradColors.destroy();
+        this.outGradientsBuffer.destroy();
+
+        this.settingsBuffer.destroy();
+        this.trainingConfigBuffer.destroy();
+
+        this.lossGradientTexture.destroy();
+        this.metricMapTexture.destroy();
+
+        this.metricErrorPairsBuffer.destroy();
+        this.metricReduceScratchA.destroy();
+        this.metricReduceScratchB.destroy();
+        this.metricErrorConfigBuffer.destroy();
+        this.metricThresholdConfigBuffer.destroy();
+        this.metricNormalizeInfoBuffer.destroy();
+
+        this.metricCountsBuffer.destroy();
     }
 }

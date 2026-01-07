@@ -256,7 +256,31 @@ fn main_geometry_backward(@builtin(global_invocation_id) global_id: vec3<u32>) {
     let dL_dopacity_raw = dL_dopac * opacity_sigmoid * (1.0 - opacity_sigmoid);
 
     // Convert scale gradient from scale-space to log-scale-space for the optimizer.
-    let dL_dlog_scale = dL_dscale * scale;
+    var dL_dlog_scale = dL_dscale * scale;
+
+    // Screen-space radius cap
+    {
+        let cap_px = settings.max_splat_radius_px;
+        if (cap_px > 0.0) {
+            let denom_cap = a * c - b * b;
+            if (denom_cap > 0.0) {
+                let conic_x = c / denom_cap;
+                let conic_y = -b / denom_cap;
+                let conic_z = a / denom_cap;
+                let disc = conic_y * conic_y - conic_x * conic_z;
+
+                let opacity_threshold = 128.0;
+                let t_cap = 2.0 * log(opacity_sigmoid * opacity_threshold);
+                if (t_cap > 0.0 && disc < 0.0) {
+                    let x_extent = sqrt(t_cap * conic_z / (-disc));
+                    let y_extent = sqrt(t_cap * conic_x / (-disc));
+                    if (max(x_extent, y_extent) >= cap_px) {
+                        dL_dlog_scale = max(dL_dlog_scale, vec3<f32>(0.0));
+                    }
+                }
+            }
+        }
+    }
     
     // Store outputs (Packed)
     gradients[idx].pos_opacity[0] = pack2x16float(vec2<f32>(final_dL_dmean3D.x, final_dL_dmean3D.y));

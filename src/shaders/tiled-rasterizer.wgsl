@@ -21,6 +21,7 @@ struct RenderSettings {
     viewport_y: f32,
     point_size_px: f32,
     gaussian_mode: f32,
+    max_splat_radius_px: f32,
 };
 
 struct Splat {
@@ -60,6 +61,7 @@ const MAX_BATCHES = 32u;
 
 struct SharedSplat {
     center_px: vec2<f32>,
+    extents_px: vec2<f32>,
     conic: vec3<f32>,
     color: vec3<f32>,
     opacity: f32,
@@ -153,10 +155,14 @@ fn tiled_rasterize(
                                 let conic_z = unpack2x16float(splat.conic_z);
                                 let color_rg = unpack2x16float(splat.color_rg);
                                 let color_ba = unpack2x16float(splat.color_ba);
+                                let extents_px_raw = unpack2x16float(splat.radius);
                                 
                                 let center_px = (pos_ndc * vec2<f32>(0.5, -0.5) + 0.5) * viewport;
+                                let cap = select(1e9, settings.max_splat_radius_px, settings.max_splat_radius_px > 0.0);
+                                let extents_px = min(extents_px_raw, vec2<f32>(cap));
 
                                 shared_splats[local_idx].center_px = center_px;
+                                shared_splats[local_idx].extents_px = extents_px;
                                 shared_splats[local_idx].conic = vec3<f32>(conic_xy.x, conic_xy.y, conic_z.x);
                                 shared_splats[local_idx].color = vec3<f32>(color_rg.x, color_rg.y, color_ba.x);
                                 shared_splats[local_idx].opacity = color_ba.y;
@@ -197,10 +203,16 @@ fn tiled_rasterize(
                 let shared_splat = shared_splats[i];
                 let delta = pixel - shared_splat.center_px;
                 let conic = shared_splat.conic;
+                let extents = shared_splat.extents_px;
+
+                if (abs(delta.x) > extents.x || abs(delta.y) > extents.y) {
+                    continue;
+                }
                 
                 if settings.gaussian_mode < 0.5 {
                     let dist_sq = dot(delta, delta);
-                    let limit = settings.point_size_px;
+                    let cap = select(1e9, settings.max_splat_radius_px, settings.max_splat_radius_px > 0.0);
+                    let limit = min(settings.point_size_px, cap);
                     if dist_sq <= limit * limit {
                         accum_color = vec3<f32>(1.0, 1.0, 0.0);
                         accum_alpha = 1.0;

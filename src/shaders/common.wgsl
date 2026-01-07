@@ -14,6 +14,7 @@ struct RenderSettings {
     viewport_y: f32,
     point_size_px: f32,
     gaussian_mode: f32,
+    max_splat_radius_px: f32,
 };
 
 struct Gaussian {
