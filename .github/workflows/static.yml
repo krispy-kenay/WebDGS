@@ -38,13 +38,7 @@ jobs:
       - name: Install dependencies
         run: npm ci
       - name: Build
-<<<<<<< HEAD
-        env:
-          GITHUB_ACTIONS_BASE: ${{ github.event.repository.name }}
-        run: npm run build
-=======
         run: npm run build -- --base=/${{ github.event.repository.name }}/
->>>>>>> 7cea98c6d1e623f0bc8e4f57ddc0f2fb1a42f3be
       - name: Setup Pages
         uses: actions/configure-pages@v4
       - name: Upload artifact
@@ -54,8 +48,4 @@ jobs:
           path: './dist'
       - name: Deploy to GitHub Pages
         id: deployment
-<<<<<<< HEAD
         uses: actions/deploy-pages@v4
-=======
-        uses: actions/deploy-pages@v4
->>>>>>> 7cea98c6d1e623f0bc8e4f57ddc0f2fb1a42f3be
