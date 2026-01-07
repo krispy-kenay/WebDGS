@@ -4,7 +4,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>WebDGS – Differentiable Gaussian Splatting</title>
+  <title>WebDGS - Differentiable Gaussian Splatting</title>
 </head>
 
 <body>
@@ -71,17 +71,149 @@
           <section class="panel__section training">
             <div class="section-header">
               <h2>Training Controls</h2>
-              <span class="muted">Coming soon</span>
+              <span id="training-status" class="pill pill--muted">Idle</span>
+            </div>
+            <div class="training-stats" aria-live="polite">
+              <div class="training-stats__row">
+                <div class="training-stats__label">Iteration</div>
+                <div class="training-stats__value"><span id="training-iter">0</span> / <span id="training-iter-max">0</span></div>
+              </div>
+              <div class="training-stats__bar" role="progressbar" aria-label="Training progress">
+                <div id="training-progress-bar" class="training-stats__bar-fill" style="width: 0%"></div>
+              </div>
+              <div class="training-stats__metrics">
+                <div class="training-metric">
+                  <div class="training-metric__k">it/s</div>
+                  <div id="training-ips" class="training-metric__v">--</div>
+                </div>
+                <div class="training-metric">
+                  <div class="training-metric__k">Gaussians</div>
+                  <div id="training-gaussians" class="training-metric__v">--</div>
+                </div>
+                <div class="training-metric">
+                  <div class="training-metric__k">Next densify</div>
+                  <div id="training-next-densify" class="training-metric__v">--</div>
+                </div>
+              </div>
             </div>
             <div class="control-grid">
-              <label>
-                <span>Iterations</span>
-                <input type="range" id="train-iterations" min="1000" max="50000" step="1000" value="10000" />
-              </label>
-              <label>
-                <span>Learning rate</span>
-                <input type="range" id="train-lr" min="0.001" max="0.05" step="0.001" value="0.01" />
-              </label>
+              <div class="slider-field slider-field--full">
+                <div class="slider-field__header">
+                  <span class="slider-field__label">Iterations</span>
+                  <span class="slider-field__value" id="train-iterations-value"></span>
+                </div>
+                <input class="slider" type="range" id="train-iterations" min="1000" max="50000" step="1000" value="10000" />
+              </div>
+              <details class="control-window slider-field--full">
+                <summary class="control-window__summary">
+                  <span class="control-window__title">Learning Rate</span>
+                  <span class="control-window__hint">Advanced</span>
+                </summary>
+                <div class="control-window__content">
+                  <div class="control-grid control-grid--nested">
+                    <div class="slider-field">
+                      <div class="slider-field__header">
+                        <span class="slider-field__label">Position (lr_pos)</span>
+                        <span class="slider-field__value" id="lr-pos-value"></span>
+                      </div>
+                      <input class="slider" type="range" id="lr-pos" min="0" max="0.001" step="0.00001" value="0.00016" />
+                    </div>
+                    <div class="slider-field">
+                      <div class="slider-field__header">
+                        <span class="slider-field__label">Rotation (lr_rot)</span>
+                        <span class="slider-field__value" id="lr-rot-value"></span>
+                      </div>
+                      <input class="slider" type="range" id="lr-rot" min="0" max="0.01" step="0.0001" value="0.001" />
+                    </div>
+                    <div class="slider-field">
+                      <div class="slider-field__header">
+                        <span class="slider-field__label">Scale (lr_scale)</span>
+                        <span class="slider-field__value" id="lr-scale-value"></span>
+                      </div>
+                      <input class="slider" type="range" id="lr-scale" min="0" max="0.05" step="0.0005" value="0.005" />
+                    </div>
+                    <div class="slider-field">
+                      <div class="slider-field__header">
+                        <span class="slider-field__label">Opacity (lr_opacity)</span>
+                        <span class="slider-field__value" id="lr-opacity-value"></span>
+                      </div>
+                      <input class="slider" type="range" id="lr-opacity" min="0" max="0.2" step="0.001" value="0.05" />
+                    </div>
+                    <div class="slider-field">
+                      <div class="slider-field__header">
+                        <span class="slider-field__label">Color/SH (lr_color)</span>
+                        <span class="slider-field__value" id="lr-color-value"></span>
+                      </div>
+                      <input class="slider" type="range" id="lr-color" min="0" max="0.02" step="0.0001" value="0.0025" />
+                    </div>
+                  </div>
+                </div>
+              </details>
+
+              <details class="control-window slider-field--full">
+                <summary class="control-window__summary">
+                  <span class="control-window__title">Densify &amp; Prune</span>
+                  <span class="control-window__hint">Schedule</span>
+                </summary>
+                <div class="control-window__content">
+                  <div class="control-grid control-grid--nested">
+                    <div class="slider-field slider-field--full">
+                      <div class="slider-field__header">
+                        <span class="slider-field__label">Warmup</span>
+                        <span class="slider-field__value" id="densify-warmup-value"></span>
+                      </div>
+                      <input class="slider" type="range" id="densify-warmup" min="0" max="5000" step="50" value="500" />
+                    </div>
+                    <div class="slider-field">
+                      <div class="slider-field__header">
+                        <span class="slider-field__label">Interval</span>
+                        <span class="slider-field__value" id="densify-interval-value"></span>
+                      </div>
+                      <input class="slider" type="range" id="densify-interval" min="10" max="500" step="10" value="100" />
+                    </div>
+                    <div class="slider-field">
+                      <div class="slider-field__header">
+                        <span class="slider-field__label">Stop</span>
+                        <span class="slider-field__value" id="densify-stop-value"></span>
+                      </div>
+                      <input class="slider" type="range" id="densify-stop" min="1000" max="50000" step="500" value="15000" />
+                    </div>
+                  </div>
+                </div>
+              </details>
+
+              <details class="control-window slider-field--full">
+                <summary class="control-window__summary">
+                  <span class="control-window__title">Loss</span>
+                  <span class="control-window__hint">Weights</span>
+                </summary>
+                <div class="control-window__content">
+                  <p id="loss-lambda-warning" class="control-window__warning small" style="display: none; margin: 0 0 0.75rem;"></p>
+                  <div class="control-grid control-grid--nested control-grid--loss-lambdas">
+                    <div class="slider-field">
+                      <div class="slider-field__header">
+                        <span class="slider-field__label">L1 (λ)</span>
+                        <span class="slider-field__value" id="loss-lambda-l1-value"></span>
+                      </div>
+                      <input class="slider" type="range" id="loss-lambda-l1" min="0" max="1" step="0.01" value="0.8" />
+                    </div>
+                    <div class="slider-field">
+                      <div class="slider-field__header">
+                        <span class="slider-field__label">L2 (λ)</span>
+                        <span class="slider-field__value" id="loss-lambda-l2-value"></span>
+                      </div>
+                      <input class="slider" type="range" id="loss-lambda-l2" min="0" max="1" step="0.01" value="0" />
+                    </div>
+                    <div class="slider-field">
+                      <div class="slider-field__header">
+                        <span class="slider-field__label">SSIM (λ)</span>
+                        <span class="slider-field__value" id="loss-lambda-dssim-value"></span>
+                      </div>
+                      <input class="slider" type="range" id="loss-lambda-dssim" min="0" max="1" step="0.01" value="0.2" />
+                    </div>
+                  </div>
+                </div>
+              </details>
               <div class="control-actions">
                 <button id="train-start" class="primary">Start Training</button>
                 <button id="train-stop" class="secondary">Stop</button>
@@ -110,12 +242,18 @@
                 <span>Show Loss</span>
               </label>
               <label>
-                <span>Gaussian scale</span>
-                <input type="range" id="gaussian-scale" min="0" max="1.5" step="0.01" value="1" />
+                <div class="slider-field__header slider-field__header--inline">
+                  <span class="slider-field__label">Gaussian scale</span>
+                  <span class="slider-field__value" id="gaussian-scale-value"></span>
+                </div>
+                <input class="slider" type="range" id="gaussian-scale" min="0" max="1.5" step="0.01" value="1" />
               </label>
               <label>
-                <span>Point size (px)</span>
-                <input type="range" id="point-size" min="1" max="20" step="1" value="1" />
+                <div class="slider-field__header slider-field__header--inline">
+                  <span class="slider-field__label">Point size (px)</span>
+                  <span class="slider-field__value" id="point-size-value"></span>
+                </div>
+                <input class="slider" type="range" id="point-size" min="1" max="20" step="1" value="1" />
               </label>
               <div class="control-actions">
                 <button id="enter-renderer" class="primary">Toggle viewer</button>
@@ -130,6 +268,7 @@
     <button id="panel-floating-toggle" class="floating-toggle" aria-label="Open control panel">☰</button>
   </div>
   <div id="fps-indicator" class="hud hud--fps">-- fps</div>
+  <div id="training-iter-hud" class="hud hud--train-iter" style="display: none;">0 / 0</div>
   <div id="control-guide" class="hud hud--controls">
     <p>Left drag: look around</p>
     <p>WASD: move, Space/Ctrl: up/down</p>
