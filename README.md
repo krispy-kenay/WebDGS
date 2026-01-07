@@ -2,7 +2,7 @@
 
 Differentiable Gaussian Splatting training and viewing, entirely in the browser with WebGPU. This is a full pipeline implemented as a static site: load data, train, densify and prune, and render the evolving point cloud live, all on the GPU.
 
-Live demo (placeholder): https://example.com/webdgs
+Live demo: [https://krispy-kenay.github.io/WebDGS/](https://krispy-kenay.github.io/WebDGS/)
 
 <details>
 <summary>Quick facts</summary>
