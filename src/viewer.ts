@@ -44,6 +44,9 @@ export class Viewer {
     }
 
     setPointCloud(pointCloud: PointCloud) {
+        this.forwardPass?.destroy();
+        this.rasterizer?.destroy();
+
         this.pointCloud = pointCloud;
         this.forwardPass = new TiledForwardPass(this.device, pointCloud, this.camera.uniform_buffer, {
             viewportWidth: this.canvas.width,

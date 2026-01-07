@@ -10,6 +10,7 @@ export interface DynamicSortStuff {
     sort: (encoder: GPUCommandEncoder) => void,
     sort_info_buffer: GPUBuffer,
     sort_dispatch_indirect_buffer: GPUBuffer,
+    histogram_buffer: GPUBuffer,
 
     // ping-pong
     ping_pong: {
@@ -17,7 +18,9 @@ export interface DynamicSortStuff {
         sort_depths_buffer: GPUBuffer,
     }[]
 
-    final_out_index: number
+    final_out_index: number,
+
+    destroy: () => void,
 }
 
 
@@ -385,8 +388,18 @@ export function get_dynamic_sorter(max_capacity: number, device: GPUDevice, stat
     return {
         sort_info_buffer,
         sort_dispatch_indirect_buffer,
+        histogram_buffer,
         ping_pong,
         sort,
         final_out_index,
+        destroy: () => {
+            sort_info_buffer.destroy();
+            sort_dispatch_indirect_buffer.destroy();
+            histogram_buffer.destroy();
+            for (const pp of ping_pong) {
+                pp.sort_indices_buffer.destroy();
+                pp.sort_depths_buffer.destroy();
+            }
+        },
     };
 }

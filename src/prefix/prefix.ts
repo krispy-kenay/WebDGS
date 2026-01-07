@@ -38,6 +38,8 @@ export interface PrefixScanner {
     max_elements: number;
     /** Update the element count and dispatch the scan (helper) */
     set_count: (count: number) => { num_workgroups: number };
+    /** Destroy owned GPU buffers */
+    destroy: () => void;
 }
 
 /** Configuration constants */
@@ -245,5 +247,11 @@ export function get_prefix_scanner(maxElements: number, device: GPUDevice): Pref
         block_sums_buffer,
         max_elements: maxElements,
         set_count,
+        destroy: () => {
+            info_buffer.destroy();
+            input_buffer.destroy();
+            output_buffer.destroy();
+            block_sums_buffer.destroy();
+        },
     };
 }
