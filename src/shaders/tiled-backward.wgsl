@@ -9,10 +9,11 @@
 @group(0) @binding(1) var<uniform> settings: RenderSettings;
 
 @group(1) @binding(0) var<storage, read> gaussians: array<Gaussian>;
-@group(1) @binding(1) var<storage, read_write> grad_means_2d: array<FixedPoint64>; 
+@group(1) @binding(1) var<storage, read_write> grad_means_2d: array<FixedPoint64>; // x, y, |x|, |y|
 @group(1) @binding(2) var<storage, read_write> grad_conics: array<FixedPoint64>;
 @group(1) @binding(3) var<storage, read_write> grad_opacity: array<FixedPoint64>;
 @group(1) @binding(4) var<storage, read_write> grad_colors: array<FixedPoint64>; 
+@group(1) @binding(5) var<storage, read> tile_counts: array<u32>;
 
 // Packed Gradient Struct
 struct GaussianGradient {
@@ -23,6 +24,8 @@ struct GaussianGradient {
 };
 
 @group(2) @binding(0) var<storage, read_write> gradients: array<GaussianGradient>;
+// Per Gaussian since the last densify: sum |grad|, sum |abs grad|, visible steps
+@group(2) @binding(1) var<storage, read_write> densify_stats: array<vec4<f32>>;
 
 // Constants
 const WORKGROUP_SIZE: u32 = 256;
@@ -47,8 +50,8 @@ fn main_geometry_backward(@builtin(global_invocation_id) global_id: vec3<u32>) {
 
     // 1. Load Gradients
     var dL_dmean2D_px = vec2<f32>(
-        atomicLoadFloat(&grad_means_2d[idx * 2u + 0u]),
-        atomicLoadFloat(&grad_means_2d[idx * 2u + 1u])
+        atomicLoadFloat(&grad_means_2d[idx * 4u + 0u]),
+        atomicLoadFloat(&grad_means_2d[idx * 4u + 1u])
     );
     
     // grad_conics
@@ -90,6 +93,16 @@ fn main_geometry_backward(@builtin(global_invocation_id) global_id: vec3<u32>) {
     // Compute Projection Gradient
     let viewport = vec2<f32>(settings.viewport_x, settings.viewport_y);
     let dL_dmean2D_ndc = dL_dmean2D_px * vec2<f32>(0.5, -0.5) * viewport;
+
+    // Densify stats in FastGS units
+    if (tile_counts[idx] > 0u) {
+        let to_mean = 1.0 / (3.0 * viewport.x * viewport.y);
+        let abs_ndc = vec2<f32>(
+            atomicLoadFloat(&grad_means_2d[idx * 4u + 2u]),
+            atomicLoadFloat(&grad_means_2d[idx * 4u + 3u])
+        ) * 0.5 * viewport;
+        densify_stats[idx] += vec4<f32>(length(dL_dmean2D_ndc) * to_mean, length(abs_ndc) * to_mean, 1.0, 0.0);
+    }
     
     let view_proj = camera.proj * camera.view; 
     let p_hom = view_proj * vec4<f32>(mean3D, 1.0);

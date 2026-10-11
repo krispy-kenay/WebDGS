@@ -19,6 +19,9 @@ export interface DensifyPruneConfig {
     cloneThreshold?: number;
     splitThreshold?: number;
     pruneThreshold?: number;
+    // Mean gradient a clone needs and mean absolute gradient a split needs
+    gradThreshold?: number;
+    gradAbsThreshold?: number;
     maxNewPointsPerStep?: number;
     maxBufferBytes?: number;
 }
@@ -29,7 +32,8 @@ export interface DensifyPruneInputs {
     metricMapTexture?: GPUTextureView;
     pruningScoreBuffer?: GPUBuffer;
     maxRadiiBuffer?: GPUBuffer;
-    gradAccumBuffer?: GPUBuffer;
+    // Without it, densify is not gated by gradients
+    densifyStatsBuffer?: GPUBuffer;
 }
 
 export interface DensifyPruneOutputs {
@@ -103,6 +107,7 @@ export class DensifyPrunePass {
 
     private readonly dummyU32Buffer: GPUBuffer;
     private readonly dummyF32Buffer: GPUBuffer;
+    private readonly dummyVec4Buffer: GPUBuffer;
 
     private prefixScanner?: PrefixScanner;
     private prefixScannerCapacity = 0;
@@ -299,6 +304,12 @@ export class DensifyPrunePass {
             GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
             new Float32Array([0])
         );
+        this.dummyVec4Buffer = createBuffer(
+            device,
+            'densify-prune dummy vec4',
+            16,
+            GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST
+        );
     }
 
     setConfig(next: Partial<DensifyPruneConfig>): void {
@@ -489,11 +500,11 @@ export class DensifyPrunePass {
         u32[0] = this.numPoints;
         u32[1] = numViews;
         u32[2] = cloneThreshold;
-        u32[3] = 0;
+        u32[3] = inputs.densifyStatsBuffer ? 1 : 0;
         f32[4] = pruneOpacity;
         f32[5] = splitScaleThreshold;
-        f32[6] = 0;
-        f32[7] = 0;
+        f32[6] = this.config.gradThreshold ?? 0;
+        f32[7] = this.config.gradAbsThreshold ?? 0;
         this.device.queue.writeBuffer(this.decideConfigBuffer, 0, uni);
 
         const bindGroup = this.device.createBindGroup({
@@ -505,7 +516,7 @@ export class DensifyPrunePass {
                 { binding: 2, resource: { buffer: inputs.metricCountsBuffer ?? this.dummyU32Buffer } },
                 { binding: 3, resource: { buffer: inputs.pruningScoreBuffer ?? this.dummyF32Buffer } },
                 { binding: 4, resource: { buffer: inputs.maxRadiiBuffer ?? this.dummyF32Buffer } },
-                { binding: 5, resource: { buffer: inputs.gradAccumBuffer ?? this.dummyF32Buffer } },
+                { binding: 5, resource: { buffer: inputs.densifyStatsBuffer ?? this.dummyVec4Buffer } },
                 { binding: 6, resource: { buffer: this.outCountBuffer } },
                 { binding: 7, resource: { buffer: this.actionBuffer } },
             ],

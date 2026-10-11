@@ -18,13 +18,15 @@ struct Gaussian3D {
 @group(1) @binding(5) var n_contrib_tex: texture_2d<u32>;
 @group(2) @binding(0) var loss_gradient: texture_2d<f32>;
 // Gradients
-@group(3) @binding(0) var<storage, read_write> grad_means_2d: array<FixedPoint64>; 
+@group(3) @binding(0) var<storage, read_write> grad_means_2d: array<FixedPoint64>; // x, y, |x|, |y|
 @group(3) @binding(1) var<storage, read_write> grad_conics: array<FixedPoint64>; // x, y, z
 @group(3) @binding(2) var<storage, read_write> grad_opacity: array<FixedPoint64>;
 @group(3) @binding(3) var<storage, read_write> grad_colors: array<FixedPoint64>; // RGB
 
 // Constants
 const BLOCK_SIZE: u32 = 16;
+// The |x|, |y| sums only feed the densify split gate, so they are skipped once densify has stopped
+override ACCUMULATE_ABS_GRAD: bool = true;
 
 
 fn sigmoid(x: f32) -> f32 {
@@ -158,8 +160,12 @@ fn backward_rasterize_main(@builtin(global_invocation_id) global_id: vec3<u32>, 
         let dL_dmean_x = dL_dG * (-dG_ddelta_x);
         let dL_dmean_y = dL_dG * (-dG_ddelta_y);
         
-        atomicAddFloat(&grad_means_2d[global_gaussian_idx * 2u + 0u], dL_dmean_x);
-        atomicAddFloat(&grad_means_2d[global_gaussian_idx * 2u + 1u], dL_dmean_y);
+        atomicAddFloat(&grad_means_2d[global_gaussian_idx * 4u + 0u], dL_dmean_x);
+        atomicAddFloat(&grad_means_2d[global_gaussian_idx * 4u + 1u], dL_dmean_y);
+        if (ACCUMULATE_ABS_GRAD) {
+            atomicAddFloat(&grad_means_2d[global_gaussian_idx * 4u + 2u], abs(dL_dmean_x));
+            atomicAddFloat(&grad_means_2d[global_gaussian_idx * 4u + 3u], abs(dL_dmean_y));
+        }
         
         let dL_dconic_x = dL_dG * (-0.5 * G * delta.x * delta.x);
         let dL_dconic_y = dL_dG * (-0.5 * G * 2.0 * delta.x * delta.y);

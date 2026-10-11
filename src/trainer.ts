@@ -35,8 +35,22 @@ export interface DensifyPruneTrainingConfig {
     maxBufferBytes: number;
     maxNewPointsPerStep: number;
     pruneOpacity: number;
+    // Densify when floor(flagged pixels / metric views) reaches this
     cloneThresholdCount: number;
-    splitScaleThreshold: number;
+    // Split above this fraction of the scene extent, clone below
+    splitScaleFraction: number;
+    // Mean gradient a clone needs and mean absolute gradient a split needs
+    gradThreshold: number;
+    gradAbsThreshold: number;
+}
+
+// 3DGS scene extent
+function sceneExtent(cameras: CameraData[]): number {
+    const centers = cameras.flatMap((c) => (c.position ? [c.position] : []));
+    if (centers.length === 0) return 1;
+    const mean = [0, 1, 2].map((i) => centers.reduce((sum, c) => sum + c[i], 0) / centers.length);
+    const maxDist = Math.max(...centers.map((c) => Math.hypot(c[0] - mean[0], c[1] - mean[1], c[2] - mean[2])));
+    return maxDist > 0 ? 1.1 * maxDist : 1;
 }
 
 export class Trainer {
@@ -90,6 +104,7 @@ export class Trainer {
     // Dataset
     private trainCameras: CameraData[] = [];
     private images: LoadedImage[] = [];
+    private sceneExtent = 1;
 
     constructor(device: GPUDevice, trainingConfig?: TrainingConfig, queueGate?: QueueGate) {
         this.device = device;
@@ -158,22 +173,19 @@ export class Trainer {
             },
             metricViews: 10,
             metricDownscale: 2,
-            metricThreshold: 0.5,
             maxBufferBytes,
             maxNewPointsPerStep: 5000,
-            pruneOpacity: 0.01,
-            cloneThresholdCount: 500,
-            splitScaleThreshold: 1.0,
+            // FastGS defaults
+            metricThreshold: 0.1,
+            pruneOpacity: 0.005,
+            cloneThresholdCount: 6,
+            splitScaleFraction: 0.001,
+            gradThreshold: 0.0002,
+            gradAbsThreshold: 0.0012,
         };
 
-        this.densifyPrune = new DensifyPrunePass(this.device, {
-            numViews: this.densifyPruneConfig.metricViews,
-            maxBufferBytes: this.densifyPruneConfig.maxBufferBytes,
-            maxNewPointsPerStep: this.densifyPruneConfig.maxNewPointsPerStep,
-            pruneThreshold: this.densifyPruneConfig.pruneOpacity,
-            cloneThreshold: this.densifyPruneConfig.cloneThresholdCount,
-            splitThreshold: this.densifyPruneConfig.splitScaleThreshold,
-        });
+        this.densifyPrune = new DensifyPrunePass(this.device);
+        this.syncDensifyPruneConfig();
     }
 
     setPointCloud(pointCloud: PointCloud) {
@@ -252,6 +264,9 @@ export class Trainer {
         if (cameras.length > 0 && images.length > 0 && this.trainCameras.length < cameras.length) {
             console.warn(`Dataset: only ${this.trainCameras.length} of ${cameras.length} cameras have a matching image; the rest are skipped.`);
         }
+
+        this.sceneExtent = sceneExtent(this.trainCameras);
+        this.syncDensifyPruneConfig();
     }
 
     getTrainingConfig(): TrainingConfig {
@@ -284,14 +299,20 @@ export class Trainer {
             ...next,
             schedule: { ...this.densifyPruneConfig.schedule, ...(next.schedule ?? {}) },
         };
+        this.syncDensifyPruneConfig();
+    }
 
+    private syncDensifyPruneConfig(): void {
+        const c = this.densifyPruneConfig;
         this.densifyPrune.setConfig({
-            numViews: this.densifyPruneConfig.metricViews,
-            maxBufferBytes: this.densifyPruneConfig.maxBufferBytes,
-            maxNewPointsPerStep: this.densifyPruneConfig.maxNewPointsPerStep,
-            pruneThreshold: this.densifyPruneConfig.pruneOpacity,
-            cloneThreshold: this.densifyPruneConfig.cloneThresholdCount,
-            splitThreshold: this.densifyPruneConfig.splitScaleThreshold,
+            numViews: c.metricViews,
+            maxBufferBytes: c.maxBufferBytes,
+            maxNewPointsPerStep: c.maxNewPointsPerStep,
+            pruneThreshold: c.pruneOpacity,
+            cloneThreshold: c.cloneThresholdCount,
+            splitThreshold: c.splitScaleFraction * this.sceneExtent,
+            gradThreshold: c.gradThreshold,
+            gradAbsThreshold: c.gradAbsThreshold,
         });
     }
 
@@ -407,11 +428,14 @@ export class Trainer {
             }
         };
 
+        // Distinct random cameras
+        const order = this.trainCameras.map((_, i) => i);
         let usedViews = 0;
-        const maxAttempts = viewsTarget * 4;
 
-        for (let attempt = 0; attempt < maxAttempts && usedViews < viewsTarget; attempt++) {
-            const idx = Math.floor(Math.random() * this.trainCameras.length);
+        for (let k = 0; k < order.length && usedViews < viewsTarget; k++) {
+            const pick = k + Math.floor(Math.random() * (order.length - k));
+            [order[k], order[pick]] = [order[pick], order[k]];
+            const idx = order[k];
             const camData = this.trainCameras[idx];
             const image = this.images[idx];
             if (!camData || !image) continue;
@@ -465,7 +489,9 @@ export class Trainer {
         const densifyPrepared = this.densifyPrune.encodePrepare(encoder, {
             pointCloud: this.pointCloud,
             metricCountsBuffer: this.metricsPass.getMetricCountsBuffer(),
+            densifyStatsBuffer: this.backwardPass?.getDensifyStatsBuffer(),
         });
+        this.backwardPass?.clearDensifyStats(encoder);
 
         const densifyTotalReadback = this.device.createBuffer({
             label: 'densify-prune outTotal readback',
@@ -650,11 +676,13 @@ export class Trainer {
             splatBuffer: forwardResources.splatBuffer,
             tileOffsetsBuffer: this.rasterizer!.getTileOffsetsBuffer(),
             tileIndicesBuffer: this.forwardPass!.getSortedIndicesBuffer(),
+            tileCountsBuffer: forwardResources.tileCountsBuffer,
             cameraBuffer: this.camera.uniform_buffer,
             alphaTexture: this.rasterizer!.getAlphaTextureView(),
             nContribTexture: this.rasterizer!.getNContribTextureView(),
         };
 
+        this.backwardPass!.setDensifyStatsEnabled(this.densifyPruneConfig.schedule.enabled && nextIteration <= stop);
         this.backwardPass!.encode(encoder, outputView, gtTextureView, backwardResources);
 
         // Optimizer Step

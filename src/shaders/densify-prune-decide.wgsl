@@ -16,11 +16,12 @@ struct DecideConfig {
   num_points: u32,
   num_views: u32,
   clone_threshold_count: u32,
-  _pad0: u32,
+  use_grad_stats: u32,
 
   prune_opacity: f32,
   split_scale_threshold: f32,
-  _pad1: vec2<f32>,
+  grad_threshold: f32,
+  grad_abs_threshold: f32,
 };
 
 @group(0) @binding(0) var<uniform> cfg: DecideConfig;
@@ -30,7 +31,8 @@ struct DecideConfig {
 // Future / optional inputs
 @group(0) @binding(3) var<storage, read> pruning_score: array<f32>;
 @group(0) @binding(4) var<storage, read> max_radii: array<f32>;
-@group(0) @binding(5) var<storage, read> grad_accum: array<f32>;
+// [sum |grad|, sum |abs grad|, visible steps, 0] since the last densify
+@group(0) @binding(5) var<storage, read> densify_stats: array<vec4<f32>>;
 
 @group(0) @binding(6) var<storage, read_write> out_counts: array<u32>;
 @group(0) @binding(7) var<storage, read_write> out_actions: array<u32>;
@@ -50,7 +52,6 @@ fn decide_main(@builtin(global_invocation_id) gid: vec3<u32>) {
   var _dummy: f32 = 0.0;
   if (idx < arrayLength(&pruning_score)) { _dummy = _dummy + pruning_score[idx]; }
   if (idx < arrayLength(&max_radii)) { _dummy = _dummy + max_radii[idx]; }
-  if (idx < arrayLength(&grad_accum)) { _dummy = _dummy + grad_accum[idx]; }
   if (_dummy < -1e30) {
     // Unreachable; prevents the compiler from proving _dummy unused.
     out_actions[idx] = 123456u;
@@ -79,9 +80,19 @@ fn decide_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let s1 = unpack2x16float(g.scale[1]);
     let scale3 = exp(vec3<f32>(s0.x, s0.y, s1.x));
     let max_scale = max(scale3.x, max(scale3.y, scale3.z));
+    let split = max_scale > cfg.split_scale_threshold;
 
-    action = select(1u, 2u, max_scale >= cfg.split_scale_threshold);
-    out_count = 2u;
+    var grad_ok = true;
+    if (cfg.use_grad_stats != 0u && idx < arrayLength(&densify_stats)) {
+      let s = densify_stats[idx];
+      let steps = max(s.z, 1.0);
+      grad_ok = select(s.x / steps >= cfg.grad_threshold, s.y / steps >= cfg.grad_abs_threshold, split);
+    }
+
+    if (grad_ok) {
+      action = select(1u, 2u, split);
+      out_count = 2u;
+    }
   }
 
   out_counts[idx] = out_count;

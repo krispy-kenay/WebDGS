@@ -42,6 +42,7 @@ export interface TiledBackwardResources {
     splatBuffer: GPUBuffer;
     tileOffsetsBuffer: GPUBuffer;
     tileIndicesBuffer: GPUBuffer;
+    tileCountsBuffer: GPUBuffer;
     cameraBuffer: GPUBuffer;
 
     // Textures from Rasterizer
@@ -77,6 +78,8 @@ export class TiledBackwardPass {
     private readonly accumulatePipeline: GPUComputePipeline;
     private readonly lossPipeline: GPUComputePipeline;
     private readonly backwardRasterizePipeline: GPUComputePipeline;
+    private readonly backwardRasterizeNoStatsPipeline: GPUComputePipeline;
+    private densifyStatsEnabled = true;
     private readonly backwardGeometryPipeline: GPUComputePipeline;
     private readonly metricErrorPipeline: GPUComputePipeline;
     private readonly metricReducePipeline: GPUComputePipeline;
@@ -95,6 +98,8 @@ export class TiledBackwardPass {
     private readonly gradOpacity: GPUBuffer;
     private readonly gradColors: GPUBuffer;
     private readonly outGradientsBuffer: GPUBuffer;
+    // Per Gaussian since the last densify: [sum |grad|, sum |abs grad|, visible steps, 0]
+    private readonly densifyStats: GPUBuffer;
 
     // Intermediate
     private lossGradientTexture: GPUTexture;
@@ -247,10 +252,12 @@ export class TiledBackwardPass {
 
         // Atomic Buffers
         const ACC_BYTES = 8;
-        this.gradMeans2D = createBuffer(device, 'grad-means-2d', this.numPoints * 2 * ACC_BYTES, GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST);
+
+        this.gradMeans2D = createBuffer(device, 'grad-means-2d', this.numPoints * 4 * ACC_BYTES, GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST);
         this.gradConics = createBuffer(device, 'grad-conics', this.numPoints * 4 * ACC_BYTES, GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST);
         this.gradOpacity = createBuffer(device, 'grad-opacity', this.numPoints * ACC_BYTES, GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST);
         this.gradColors = createBuffer(device, 'grad-colors', this.numPoints * 3 * ACC_BYTES, GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST);
+        this.densifyStats = createBuffer(device, 'densify-stats', this.numPoints * 16, GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST);
 
         // Output Buffers
         this.outGradientsBuffer = createBuffer(device, 'out-gradients', this.numPoints * 32, GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST);
@@ -345,6 +352,11 @@ export class TiledBackwardPass {
             label: 'bw-rasterize-compute',
             layout: 'auto',
             compute: { module: bwRasterizeModule, entryPoint: 'backward_rasterize_main' }
+        });
+        this.backwardRasterizeNoStatsPipeline = device.createComputePipeline({
+            label: 'bw-rasterize-compute (no densify stats)',
+            layout: 'auto',
+            compute: { module: bwRasterizeModule, entryPoint: 'backward_rasterize_main', constants: { ACCUMULATE_ABS_GRAD: 0 } }
         });
 
         // Backward Geometry Pipeline
@@ -629,10 +641,11 @@ export class TiledBackwardPass {
 
         // Backward Rasterize
         {
+            const rasterizePipeline = this.densifyStatsEnabled ? this.backwardRasterizePipeline : this.backwardRasterizeNoStatsPipeline;
             if (forwardResources) {
                 const bG0 = this.device.createBindGroup({
                     label: 'bw-rast-camera',
-                    layout: this.backwardRasterizePipeline.getBindGroupLayout(0),
+                    layout: rasterizePipeline.getBindGroupLayout(0),
                     entries: [
                         { binding: 0, resource: { buffer: this.settingsBuffer } },
                     ],
@@ -640,7 +653,7 @@ export class TiledBackwardPass {
 
                 const bG1 = this.device.createBindGroup({
                     label: 'bw-rast-scene',
-                    layout: this.backwardRasterizePipeline.getBindGroupLayout(1),
+                    layout: rasterizePipeline.getBindGroupLayout(1),
                     entries: [
                         { binding: 0, resource: { buffer: forwardResources.tileOffsetsBuffer } },
                         { binding: 1, resource: { buffer: forwardResources.tileIndicesBuffer } },
@@ -652,7 +665,7 @@ export class TiledBackwardPass {
 
                 const bG2 = this.device.createBindGroup({
                     label: 'bw-rast-loss',
-                    layout: this.backwardRasterizePipeline.getBindGroupLayout(2),
+                    layout: rasterizePipeline.getBindGroupLayout(2),
                     entries: [
                         { binding: 0, resource: this.lossGradientTexture.createView() }
                     ]
@@ -660,7 +673,7 @@ export class TiledBackwardPass {
 
                 const bG3 = this.device.createBindGroup({
                     label: 'bw-rast-atomic',
-                    layout: this.backwardRasterizePipeline.getBindGroupLayout(3),
+                    layout: rasterizePipeline.getBindGroupLayout(3),
                     entries: [
                         { binding: 0, resource: { buffer: this.gradMeans2D } },
                         { binding: 1, resource: { buffer: this.gradConics } },
@@ -670,7 +683,7 @@ export class TiledBackwardPass {
                 });
 
                 const pass = encoder.beginComputePass({ label: 'backward-rasterize-pass' });
-                pass.setPipeline(this.backwardRasterizePipeline);
+                pass.setPipeline(rasterizePipeline);
                 pass.setBindGroup(0, bG0);
                 pass.setBindGroup(1, bG1);
                 pass.setBindGroup(2, bG2);
@@ -703,7 +716,8 @@ export class TiledBackwardPass {
                         { binding: 1, resource: { buffer: this.gradMeans2D } },
                         { binding: 2, resource: { buffer: this.gradConics } },
                         { binding: 3, resource: { buffer: this.gradOpacity } },
-                        { binding: 4, resource: { buffer: this.gradColors } }
+                        { binding: 4, resource: { buffer: this.gradColors } },
+                        { binding: 5, resource: { buffer: forwardResources.tileCountsBuffer } }
                     ]
                 });
 
@@ -711,7 +725,8 @@ export class TiledBackwardPass {
                     label: 'bw-geom-output',
                     layout: this.backwardGeometryPipeline.getBindGroupLayout(2),
                     entries: [
-                        { binding: 0, resource: { buffer: this.outGradientsBuffer } }
+                        { binding: 0, resource: { buffer: this.outGradientsBuffer } },
+                        { binding: 1, resource: { buffer: this.densifyStats } }
                     ]
                 });
 
@@ -834,6 +849,20 @@ export class TiledBackwardPass {
         return this.outGradientsBuffer;
     }
 
+    // Densify stats are only needed while densify runs
+    setDensifyStatsEnabled(enabled: boolean): void {
+        this.densifyStatsEnabled = enabled;
+    }
+
+    getDensifyStatsBuffer(): GPUBuffer {
+        return this.densifyStats;
+    }
+
+    // FastGS restarts the gradient stats after every densify pass
+    clearDensifyStats(encoder: GPUCommandEncoder): void {
+        encoder.clearBuffer(this.densifyStats);
+    }
+
     destroy(): void {
         if (this.destroyed) return;
         this.destroyed = true;
@@ -843,6 +872,7 @@ export class TiledBackwardPass {
         this.gradOpacity.destroy();
         this.gradColors.destroy();
         this.outGradientsBuffer.destroy();
+        this.densifyStats.destroy();
 
         this.settingsBuffer.destroy();
         this.trainingConfigBuffer.destroy();

@@ -120,17 +120,15 @@ fn copy_point(dst_idx: u32, src_idx: u32, variant: u32, action: u32) {
     pos = pos + quat_rotate(q, jitter_local);
   }
 
-  // Split = replace: emit two children (slot0/slot1) and shrink scale.
+  // Split = replace: two children, each sampled from N(mean, sigma) with scale / 1.6
   if (action == 2u) {
-    let seed = src_idx * 747796405u + 2891336453u;
+    let seed = (src_idx * 2u + variant) * 747796405u + 2891336453u;
     let d = vec3<f32>(
       randn_approx(seed ^ 0x9E3779B9u),
       randn_approx(seed ^ 0x243F6A88u),
       randn_approx(seed ^ 0xB7E15162u)
     );
-    let offset_local = 0.5 * sigma * d;
-    let sgn = select(1.0, -1.0, variant == 1u);
-    pos = pos + sgn * quat_rotate(q, offset_local);
+    pos = pos + quat_rotate(q, sigma * d);
 
     let log_child = log_sigma - vec3<f32>(LN_1P6);
     g.scale[0] = pack2x16float(log_child.xy);
