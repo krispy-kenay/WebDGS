@@ -181,8 +181,8 @@ export class TiledRasterizer {
         // Ensure output texture matches target size
         this.ensureOutputTexture(width, height);
 
-        // Current tile grid of the forward pass (viewport may have changed since construction)
-        const { numTilesX, numTilesY, totalTiles } = this.forwardPass.getResources();
+        // Current tile grid and sorter of the forward pass
+        const { numTilesX, numTilesY, totalTiles, sorter, maxTileEntries } = this.forwardPass.getResources();
         if (this.tileOffsetsBuffer.size < (totalTiles + 1) * 4) {
             this.tileOffsetsBuffer.destroy();
             this.tileOffsetsBuffer = this.createTileOffsetsBuffer(totalTiles);
@@ -194,7 +194,7 @@ export class TiledRasterizer {
             layout: this.initOffsetsPipeline.getBindGroupLayout(0),
             entries: [
                 { binding: 0, resource: { buffer: this.resources.tileInfoBuffer } },
-                { binding: 1, resource: { buffer: this.resources.sorter.sort_info_buffer } },
+                { binding: 1, resource: { buffer: sorter.sort_info_buffer } },
                 { binding: 2, resource: { buffer: this.forwardPass.getSortedKeysBuffer() } },
                 { binding: 3, resource: { buffer: this.tileOffsetsBuffer } },
                 { binding: 4, resource: { buffer: this.forwardPass.getStatsBuffer() } },
@@ -227,8 +227,10 @@ export class TiledRasterizer {
             const pass = encoder.beginComputePass({ label: 'build-offsets' });
             pass.setPipeline(this.buildOffsetsPipeline);
             pass.setBindGroup(0, this.offsetsBindGroup!);
-            const dispatchSize = Math.ceil(this.resources.maxTileEntries / RANGES_WORKGROUP_SIZE);
-            pass.dispatchWorkgroups(dispatchSize);
+            // One thread per entry, spread over 2D to stay within maxComputeWorkgroupsPerDimension
+            const workgroups = Math.ceil(maxTileEntries / RANGES_WORKGROUP_SIZE);
+            const x = Math.min(workgroups, this.device.limits.maxComputeWorkgroupsPerDimension);
+            pass.dispatchWorkgroups(x, Math.ceil(workgroups / x));
             pass.end();
         }
 

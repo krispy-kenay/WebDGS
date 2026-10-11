@@ -44,6 +44,7 @@ export class Viewer {
     }
 
     setPointCloud(pointCloud: PointCloud) {
+        const tileEntriesHint = this.forwardPass?.getTileEntryStats().capacity;
         this.forwardPass?.destroy();
         this.rasterizer?.destroy();
 
@@ -52,6 +53,7 @@ export class Viewer {
             viewportWidth: this.canvas.width,
             viewportHeight: this.canvas.height,
             renderMode: 'pointcloud',
+            tileEntriesHint,
         });
 
         this.rasterizer = new TiledRasterizer({
@@ -72,6 +74,9 @@ export class Viewer {
         if (!this.forwardPass || !this.rasterizer || !this.pointCloud) {
             return;
         }
+
+        // Grow the sort buffers if the previous frame did not fit
+        void this.forwardPass.syncCapacity();
 
         // Forward Pass
         this.forwardPass.encode(commandEncoder);

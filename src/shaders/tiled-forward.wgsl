@@ -345,8 +345,11 @@ fn emit_main(@builtin(global_invocation_id) gid: vec3<u32>) {
             let tile_id = ty * tile_info.num_tiles_x + tx;
             
             let key_idx = start_offset + offset;
-            tile_keys[key_idx] = make_tile_key(tile_id, depth_ordered);
-            tile_indices[key_idx] = idx;
+            // Entries beyond the sort buffers are dropped
+            if (key_idx < tile_info.max_tile_entries) {
+                tile_keys[key_idx] = make_tile_key(tile_id, depth_ordered);
+                tile_indices[key_idx] = idx;
+            }
             
             offset++;
         }

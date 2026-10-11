@@ -8,7 +8,7 @@ import tiledForwardWGSL from '../shaders/tiled-forward.wgsl';
 import updateStatsWGSL from '../shaders/update-stats.wgsl';
 import commonWGSL from '../shaders/common.wgsl';
 import { get_dynamic_sorter, DynamicSortStuff, C } from '../sort/sort_dynamic';
-import { get_prefix_scanner, PrefixScanner, PREFIX_CONSTANTS } from '../prefix/prefix';
+import { get_prefix_scanner, PrefixScanner } from '../prefix/prefix';
 import { PointCloud } from '../utils/load';
 
 export type RenderMode = 'pointcloud' | 'gaussian';
@@ -17,9 +17,11 @@ export type RenderMode = 'pointcloud' | 'gaussian';
 const WORKGROUP_SIZE = 256;
 const TILE_WIDTH = 16;
 const TILE_HEIGHT = 16;
+// Sort block size, tile-entry capacities are multiples of it
+const KEYS_PER_SORT_BLOCK = C.histogram_wg_size * C.rs_histogram_block_rows;
 
-// Maximum tiles per Gaussian
-const MAX_TILES_PER_GAUSSIAN = 256;
+// Initial sort capacity per Gaussian, grown on demand (see syncCapacity)
+const INITIAL_TILES_PER_GAUSSIAN = 10;
 
 export interface TiledForwardPassConfig {
     viewportWidth: number;
@@ -28,6 +30,8 @@ export interface TiledForwardPassConfig {
     pointSizePx?: number;
     maxSplatRadiusPx?: number;
     renderMode?: RenderMode;
+    // Initial capacity for tile entries
+    tileEntriesHint?: number;
 }
 
 export interface TiledForwardResources {
@@ -74,7 +78,7 @@ export class TiledForwardPass {
     private readonly updateStatsPipeline: GPUComputePipeline;
 
     // GPU Utilities
-    private readonly sorter: DynamicSortStuff;
+    private sorter: DynamicSortStuff;
     private readonly prefixScanner: PrefixScanner;
 
     // Bind Groups
@@ -83,7 +87,7 @@ export class TiledForwardPass {
     private emitCameraBindGroup: GPUBindGroup;
     private readonly emitSceneBindGroup: GPUBindGroup;
     private readonly emitOffsetBindGroup: GPUBindGroup;
-    private readonly emitSortBindGroup: GPUBindGroup;
+    private emitSortBindGroup: GPUBindGroup;
     private readonly updateStatsBindGroup: GPUBindGroup;
 
     // Buffers
@@ -91,12 +95,15 @@ export class TiledForwardPass {
     private readonly depthsBuffer: GPUBuffer;
     private readonly tileCountsBuffer: GPUBuffer;
     private readonly tileOffsetsBuffer: GPUBuffer;
-    private readonly tileKeysBuffer: GPUBuffer;
-    private readonly tileIndicesBuffer: GPUBuffer;
+    private tileKeysBuffer: GPUBuffer;
+    private tileIndicesBuffer: GPUBuffer;
     private readonly settingsBuffer: GPUBuffer;
     private readonly tileInfoBuffer: GPUBuffer;
     private readonly pipelineStatsBuffer: GPUBuffer;
     private readonly numGaussiansBuffer: GPUBuffer;
+    // Copy of the pipeline stats of the last encoded frame
+    private readonly statsReadbackBuffer: GPUBuffer;
+    private statsReadbackState: 'idle' | 'copied' | 'mapping' = 'idle';
 
     // Settings data (CPU-side for updates)
     private readonly settingsData: Float32Array;
@@ -111,6 +118,8 @@ export class TiledForwardPass {
     private numTilesY: number;
     private totalTiles: number;
     private maxTileEntries: number;
+    private readonly maxTileEntriesLimit: number;
+    private lastRequestedTileEntries = 0;
 
     // Render mode
     private renderMode: RenderMode;
@@ -133,29 +142,14 @@ export class TiledForwardPass {
         this.numTilesY = Math.ceil(config.viewportHeight / TILE_HEIGHT);
         this.totalTiles = this.numTilesX * this.numTilesY;
 
-        // Compute maxTileEntries constraints
-        const avgTilesPerGaussian = 30;
-        const keys_per_workgroup = C.histogram_wg_size * C.rs_histogram_block_rows;
-
-        // Workload estimate
-        const baseEstimate = Math.min(
-            this.numPoints * avgTilesPerGaussian,
-            this.numPoints * MAX_TILES_PER_GAUSSIAN
-        );
-
-        // Buffer size constraints
-        const MAX_BUFFER_SIZE = 128 * 1024 * 1024;  // 128MB
-        const BYTES_PER_KEY = 4;
-        const maxFromBufferLimit = Math.floor(MAX_BUFFER_SIZE / BYTES_PER_KEY);
-
-        // Prefix sum limit
-        const maxFromPrefixSum = PREFIX_CONSTANTS.MAX_ELEMENTS;
-        const constrainedMax = Math.min(baseEstimate, maxFromBufferLimit, maxFromPrefixSum);
-        this.maxTileEntries = Math.ceil(constrainedMax / keys_per_workgroup) * keys_per_workgroup;
+        // Every sort buffer (4 bytes per entry, payload one block larger) must fit in one buffer / storage binding.
+        const bytesLimit = Math.min(device.limits.maxBufferSize, device.limits.maxStorageBufferBindingSize);
+        this.maxTileEntriesLimit = (Math.floor(bytesLimit / 4 / KEYS_PER_SORT_BLOCK) - 1) * KEYS_PER_SORT_BLOCK;
+        const estimate = config.tileEntriesHint ?? this.numPoints * INITIAL_TILES_PER_GAUSSIAN;
+        this.maxTileEntries = this.tileEntryCapacity(estimate);
 
         console.log(`maxTileEntries: ${this.maxTileEntries.toLocaleString()} ` +
-            `(estimate: ${baseEstimate.toLocaleString()}, buffer limit: ${maxFromBufferLimit.toLocaleString()}, ` +
-            `prefix limit: ${maxFromPrefixSum.toLocaleString()})`);
+            `(estimate: ${Math.round(estimate).toLocaleString()}, limit: ${this.maxTileEntriesLimit.toLocaleString()})`);
 
         this.numWorkgroups = Math.ceil(this.numPoints / WORKGROUP_SIZE);
 
@@ -220,11 +214,16 @@ export class TiledForwardPass {
         this.tileKeysBuffer = this.sorter.ping_pong[0].sort_depths_buffer;
         this.tileIndicesBuffer = this.sorter.ping_pong[0].sort_indices_buffer;
 
-        // Num gaussians buffer
+        // Num gaussians + tile-entry capacity (update-stats)
         this.numGaussiansBuffer = createBuffer(
-            device, 'num-gaussians', 4,
+            device, 'num-gaussians', 16,
             GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-            new Uint32Array([this.numPoints])
+            new Uint32Array([this.numPoints, this.maxTileEntries, 0, 0])
+        );
+
+        this.statsReadbackBuffer = createBuffer(
+            device, 'pipeline-stats-readback', 16,
+            GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST
         );
 
         // Shaders
@@ -299,14 +298,7 @@ export class TiledForwardPass {
             ],
         });
 
-        this.emitSortBindGroup = device.createBindGroup({
-            label: 'emit-sort',
-            layout: this.emitPipeline.getBindGroupLayout(3),
-            entries: [
-                { binding: 0, resource: { buffer: this.tileKeysBuffer } },
-                { binding: 1, resource: { buffer: this.tileIndicesBuffer } },
-            ],
-        });
+        this.emitSortBindGroup = this.createEmitSortBindGroup();
 
         const updateStatsModule = device.createShaderModule({
             label: 'update-stats',
@@ -384,6 +376,61 @@ export class TiledForwardPass {
         if (!options?.skipSort) {
             this.sorter.sort(encoder);
         }
+
+        // Keep this frame's tile-entry count for syncCapacity()
+        if (this.statsReadbackState === 'idle') {
+            encoder.copyBufferToBuffer(this.pipelineStatsBuffer, 0, this.statsReadbackBuffer, 0, 16);
+            this.statsReadbackState = 'copied';
+        }
+    }
+
+    // Reads back how many tile entries the last encoded frame needed (call after that frame was submitted) and grows the sort buffers if they did not fit.
+    async syncCapacity(): Promise<void> {
+        if (this.statsReadbackState !== 'copied' || this.destroyed) return;
+        this.statsReadbackState = 'mapping';
+        try {
+            await this.statsReadbackBuffer.mapAsync(GPUMapMode.READ);
+        } catch {
+            this.statsReadbackState = 'idle';
+            return;
+        }
+        const requested = new Uint32Array(this.statsReadbackBuffer.getMappedRange())[2];
+        this.statsReadbackBuffer.unmap();
+        this.statsReadbackState = 'idle';
+        this.lastRequestedTileEntries = requested;
+        if (requested > this.maxTileEntries && !this.destroyed) {
+            this.growTileEntries(requested);
+        }
+    }
+
+    // Tile entries needed by the last frame read back by syncCapacity(), and the current capacity / limit
+    getTileEntryStats(): { requested: number; capacity: number; limit: number } {
+        return { requested: this.lastRequestedTileEntries, capacity: this.maxTileEntries, limit: this.maxTileEntriesLimit };
+    }
+
+    private tileEntryCapacity(entries: number): number {
+        const blocks = Math.ceil(Math.max(1, entries) / KEYS_PER_SORT_BLOCK);
+        return Math.min(blocks * KEYS_PER_SORT_BLOCK, this.maxTileEntriesLimit);
+    }
+
+    private growTileEntries(requested: number): void {
+        const capacity = this.tileEntryCapacity(requested * 1.5);
+        if (capacity <= this.maxTileEntries) {
+            return;
+        }
+        console.log(`maxTileEntries: ${this.maxTileEntries.toLocaleString()} -> ${capacity.toLocaleString()} (needed ${requested.toLocaleString()})`);
+
+        this.sorter.destroy();
+        this.maxTileEntries = capacity;
+        this.sorter = get_dynamic_sorter(capacity, this.device, this.pipelineStatsBuffer);
+        this.tileKeysBuffer = this.sorter.ping_pong[0].sort_depths_buffer;
+        this.tileIndicesBuffer = this.sorter.ping_pong[0].sort_indices_buffer;
+        this.emitSortBindGroup = this.createEmitSortBindGroup();
+
+        this.tileInfoData[3] = capacity;
+        this.device.queue.writeBuffer(this.tileInfoBuffer, 0, this.tileInfoData);
+        this.device.queue.writeBuffer(this.numGaussiansBuffer, 0, new Uint32Array([this.numPoints, capacity, 0, 0]));
+        this.updateSorterDispatch();
     }
 
     setCameraBuffer(buffer: GPUBuffer): void {
@@ -471,6 +518,17 @@ export class TiledForwardPass {
         });
     }
 
+    private createEmitSortBindGroup(): GPUBindGroup {
+        return this.device.createBindGroup({
+            label: 'emit-sort',
+            layout: this.emitPipeline.getBindGroupLayout(3),
+            entries: [
+                { binding: 0, resource: { buffer: this.tileKeysBuffer } },
+                { binding: 1, resource: { buffer: this.tileIndicesBuffer } },
+            ],
+        });
+    }
+
     private createEmitCameraBindGroup(cameraBuffer: GPUBuffer): GPUBindGroup {
         return this.device.createBindGroup({
             label: 'emit-camera',
@@ -527,6 +585,7 @@ export class TiledForwardPass {
         this.tileInfoBuffer.destroy();
         this.pipelineStatsBuffer.destroy();
         this.numGaussiansBuffer.destroy();
+        this.statsReadbackBuffer.destroy();
 
         this.prefixScanner.destroy();
         this.sorter.destroy();

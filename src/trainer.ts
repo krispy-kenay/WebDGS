@@ -54,6 +54,9 @@ export class Trainer {
     private pointCloud: PointCloud | null = null;
     private readonly densifyPrune: DensifyPrunePass;
     private metricsForwardPass: TiledForwardPass | null = null;
+    // Tile-entry capacity the forward passes grew to
+    private tileEntriesHint: number | undefined;
+    private metricsTileEntriesHint: number | undefined;
     private metricsRasterizer: TiledRasterizer | null = null;
     private metricsPass: TiledBackwardPass | null = null;
     private metricsViewportWidth = 0;
@@ -203,6 +206,8 @@ export class Trainer {
         const oldOptimizerParams = this.optimizer?.getHyperparameters();
 
         // Tear down old graph
+        this.tileEntriesHint = this.forwardPass?.getTileEntryStats().capacity ?? this.tileEntriesHint;
+        this.metricsTileEntriesHint = this.metricsForwardPass?.getTileEntryStats().capacity ?? this.metricsTileEntriesHint;
         this.forwardPass?.destroy();
         this.rasterizer?.destroy();
         this.backwardPass?.destroy();
@@ -354,6 +359,7 @@ export class Trainer {
             return { width, height };
         }
 
+        this.metricsTileEntriesHint = this.metricsForwardPass?.getTileEntryStats().capacity ?? this.metricsTileEntriesHint;
         this.metricsForwardPass?.destroy();
         this.metricsRasterizer?.destroy();
         this.metricsPass?.destroy();
@@ -372,6 +378,7 @@ export class Trainer {
             viewportWidth: width,
             viewportHeight: height,
             renderMode: 'gaussian',
+            tileEntriesHint: this.metricsTileEntriesHint,
         });
         this.metricsRasterizer = new TiledRasterizer({
             device: this.device,
@@ -453,6 +460,7 @@ export class Trainer {
             );
 
             await submitView(encoder);
+            await this.metricsForwardPass.syncCapacity();
             usedViews++;
         }
 
@@ -675,6 +683,7 @@ export class Trainer {
             this.device.queue.submit([cmd]);
             await this.device.queue.onSubmittedWorkDone();
         }
+        await this.forwardPass!.syncCapacity();
 
         this.iteration++;
         const stepEnd = performance.now();
@@ -699,7 +708,8 @@ export class Trainer {
             this.forwardPass = new TiledForwardPass(this.device, this.pointCloud!, this.camera.uniform_buffer, {
                 viewportWidth: width,
                 viewportHeight: height,
-                renderMode: 'gaussian'
+                renderMode: 'gaussian',
+                tileEntriesHint: this.tileEntriesHint,
             });
         } else {
             this.forwardPass.setViewport(width, height);
