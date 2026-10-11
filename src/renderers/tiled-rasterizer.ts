@@ -32,7 +32,7 @@ export class TiledRasterizer {
     private readonly blitPipeline: GPURenderPipeline;
 
     // Buffers
-    private readonly tileOffsetsBuffer: GPUBuffer;
+    private tileOffsetsBuffer: GPUBuffer;
     private readonly resources: TiledForwardResources;
 
     // Bind groups
@@ -64,12 +64,8 @@ export class TiledRasterizer {
         this.viewportWidth = 0;
         this.viewportHeight = 0;
 
-        // Create tile offsets buffer
-        this.tileOffsetsBuffer = device.createBuffer({
-            label: 'tile offsets buffer',
-            size: (this.resources.totalTiles + 1) * 4,
-            usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST,
-        });
+        // Create tile offsets buffer when the viewport gets larger
+        this.tileOffsetsBuffer = this.createTileOffsetsBuffer(this.resources.totalTiles);
 
         // Create tile offsets pipelines
         const offsetsModule = device.createShaderModule({
@@ -185,6 +181,13 @@ export class TiledRasterizer {
         // Ensure output texture matches target size
         this.ensureOutputTexture(width, height);
 
+        // Current tile grid of the forward pass (viewport may have changed since construction)
+        const { numTilesX, numTilesY, totalTiles } = this.forwardPass.getResources();
+        if (this.tileOffsetsBuffer.size < (totalTiles + 1) * 4) {
+            this.tileOffsetsBuffer.destroy();
+            this.tileOffsetsBuffer = this.createTileOffsetsBuffer(totalTiles);
+        }
+
         // Recreate bind groups that depend on ping-pong buffers
         this.offsetsBindGroup = this.device.createBindGroup({
             label: 'tile-offsets-bind-group',
@@ -215,7 +218,7 @@ export class TiledRasterizer {
             const pass = encoder.beginComputePass({ label: 'init-offsets' });
             pass.setPipeline(this.initOffsetsPipeline);
             pass.setBindGroup(0, this.offsetsBindGroup!);
-            pass.dispatchWorkgroups(Math.ceil((this.resources.totalTiles + 1) / RANGES_WORKGROUP_SIZE));
+            pass.dispatchWorkgroups(Math.ceil((totalTiles + 1) / RANGES_WORKGROUP_SIZE));
             pass.end();
         }
 
@@ -236,9 +239,17 @@ export class TiledRasterizer {
             pass.setBindGroup(0, this.rasterizeConfigBindGroup);
             pass.setBindGroup(1, this.rasterizeDataBindGroup!);
             pass.setBindGroup(2, this.rasterizeOutputBindGroup!);
-            pass.dispatchWorkgroups(this.resources.numTilesX, this.resources.numTilesY);
+            pass.dispatchWorkgroups(numTilesX, numTilesY);
             pass.end();
         }
+    }
+
+    private createTileOffsetsBuffer(totalTiles: number): GPUBuffer {
+        return this.device.createBuffer({
+            label: 'tile offsets buffer',
+            size: (totalTiles + 1) * 4,
+            usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST,
+        });
     }
 
     private ensureOutputTexture(width: number, height: number) {
