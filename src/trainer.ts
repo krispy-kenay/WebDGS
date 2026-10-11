@@ -400,8 +400,15 @@ export class Trainer {
         const viewsTarget = Math.max(1, Math.floor(this.densifyPruneConfig.metricViews));
         const threshold = this.densifyPruneConfig.metricThreshold;
 
-        const encoder = this.device.createCommandEncoder({ label: 'densify-prune multiview metrics' });
-        encoder.clearBuffer(this.metricsPass.getMetricCountsBuffer());
+        // Each view is submitted on its own
+        const submitView = async (viewEncoder: GPUCommandEncoder) => {
+            const viewCmd = viewEncoder.finish();
+            if (this.queueGate) {
+                await this.queueGate.submit([viewCmd]);
+            } else {
+                this.device.queue.submit([viewCmd]);
+            }
+        };
 
         let usedViews = 0;
         const maxAttempts = viewsTarget * 4;
@@ -417,6 +424,11 @@ export class Trainer {
             this.metricsCamera.canvas.width = metricsW;
             this.metricsCamera.canvas.height = metricsH;
             this.metricsCamera.set_preset(camData);
+
+            const encoder = this.device.createCommandEncoder({ label: 'densify-prune metrics view' });
+            if (usedViews === 0) {
+                encoder.clearBuffer(this.metricsPass.getMetricCountsBuffer());
+            }
 
             // Low-res forward+rasterize.
             this.metricsForwardPass.encode(encoder);
@@ -440,6 +452,7 @@ export class Trainer {
                 { clear: false }
             );
 
+            await submitView(encoder);
             usedViews++;
         }
 
@@ -447,6 +460,7 @@ export class Trainer {
             return;
         }
 
+        const encoder = this.device.createCommandEncoder({ label: 'densify-prune prepare' });
         this.metricsPass.normalizeMetricCounts(encoder, { divisor: usedViews });
 
         this.densifyPrune.ensureSize(this.pointCloud.num_points);
