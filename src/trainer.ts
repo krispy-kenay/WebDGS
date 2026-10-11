@@ -237,8 +237,26 @@ export class Trainer {
     }
 
     setDataset(cameras: CameraData[], images: LoadedImage[]) {
-        this.trainCameras = cameras;
-        this.images = images;
+        // Training pairs trainCameras[i] with images[i], so match them by file name here.
+        // COLMAP's camera order is not the sorted file order. Falls back to the name without extension
+        const fileName = (path: string) => path.split(/[\\/]/).pop() ?? path;
+        const withoutExtension = (name: string) => name.replace(/\.[^.]*$/, '');
+        const imagesByName = new Map(images.map((image) => [image.name, image]));
+        const imagesByStem = new Map(images.map((image) => [withoutExtension(image.name), image]));
+
+        this.trainCameras = [];
+        this.images = [];
+        for (const camera of cameras) {
+            const name = fileName(camera.img_name ?? '');
+            const image = imagesByName.get(name) ?? imagesByStem.get(name);
+            if (!image) continue;
+            this.trainCameras.push(camera);
+            this.images.push(image);
+        }
+
+        if (cameras.length > 0 && images.length > 0 && this.trainCameras.length < cameras.length) {
+            console.warn(`Dataset: only ${this.trainCameras.length} of ${cameras.length} cameras have a matching image; the rest are skipped.`);
+        }
     }
 
     getTrainingConfig(): TrainingConfig {
