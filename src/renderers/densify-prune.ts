@@ -2,6 +2,7 @@ import { PointCloud } from '../utils/load';
 import decideWGSL from '../shaders/densify-prune-decide.wgsl';
 import totalWGSL from '../shaders/densify-prune-total.wgsl';
 import capWGSL from '../shaders/densify-prune-cap.wgsl';
+import flagsWGSL from '../shaders/densify-prune-flags.wgsl';
 import scatterGaussiansWGSL from '../shaders/densify-prune-scatter-gaussians.wgsl';
 import scatterOptPosWGSL from '../shaders/densify-prune-scatter-opt-pos.wgsl';
 import scatterOptVec4WGSL from '../shaders/densify-prune-scatter-opt-vec4.wgsl';
@@ -84,6 +85,10 @@ export class DensifyPrunePass {
     private readonly capPipeline: GPUComputePipeline;
     private readonly capInfoBuffer: GPUBuffer;
 
+    private readonly flagsPipeline: GPUComputePipeline;
+    private readonly flagsInfoBuffer: GPUBuffer;
+    private readonly statsBuffer: GPUBuffer;
+
     private readonly totalPipeline: GPUComputePipeline;
     private readonly totalInfoBuffer: GPUBuffer;
     private readonly outTotalBuffer: GPUBuffer;
@@ -138,6 +143,16 @@ export class DensifyPrunePass {
             compute: { module: capModule, entryPoint: 'cap_main' },
         });
 
+        const flagsModule = device.createShaderModule({
+            label: 'densify-prune flags',
+            code: flagsWGSL,
+        });
+        this.flagsPipeline = device.createComputePipeline({
+            label: 'densify-prune flags',
+            layout: 'auto',
+            compute: { module: flagsModule, entryPoint: 'flags_main' },
+        });
+
         const totalModule = device.createShaderModule({
             label: 'densify-prune total',
             code: totalWGSL,
@@ -160,6 +175,20 @@ export class DensifyPrunePass {
             'densify-prune cap info',
             16,
             GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST
+        );
+
+        this.flagsInfoBuffer = createBuffer(
+            device,
+            'densify-prune flags info',
+            16,
+            GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST
+        );
+
+        this.statsBuffer = createBuffer(
+            device,
+            'densify-prune stats',
+            16,
+            GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST
         );
 
         this.scatterInfoBuffer = createBuffer(
@@ -323,15 +352,50 @@ export class DensifyPrunePass {
         return this.outTotalBuffer;
     }
 
-    /** Exclusive scan over `outCountBuffer` into an internal prefix output buffer. */
-    encodePrefixSum(encoder: GPUCommandEncoder): GPUBuffer {
+    getStatsBuffer(): GPUBuffer {
+        return this.statsBuffer;
+    }
+
+    private ensurePrefixScanner(): PrefixScanner {
         if (!this.prefixScanner || this.prefixScannerCapacity < this.numPoints) {
             this.prefixScannerCapacity = Math.max(1, this.numPoints);
             this.prefixScanner = get_prefix_scanner(this.prefixScannerCapacity, this.device);
         }
-        const scanner = this.prefixScanner;
-        scanner.set_count(this.numPoints);
+        this.prefixScanner.set_count(this.numPoints);
+        return this.prefixScanner;
+    }
+
+    // Exclusive scan over outCountBuffer into an internal prefix output buffer
+    encodePrefixSum(encoder: GPUCommandEncoder): GPUBuffer {
+        const scanner = this.ensurePrefixScanner();
         encoder.copyBufferToBuffer(this.outCountBuffer, 0, scanner.input_buffer, 0, this.numPoints * 4);
+        scanner.scan(encoder);
+        return scanner.output_buffer;
+    }
+
+    // Flags the densify candidates (out_counts == 2), counts them and the prunes into the stats buffer, and returns each candidate's rank
+    encodeDensifyRanks(encoder: GPUCommandEncoder): GPUBuffer {
+        const scanner = this.ensurePrefixScanner();
+        this.device.queue.writeBuffer(this.flagsInfoBuffer, 0, new Uint32Array([this.numPoints, 0, 0, 0]));
+        encoder.clearBuffer(this.statsBuffer);
+
+        const bindGroup = this.device.createBindGroup({
+            label: 'densify-prune flags',
+            layout: this.flagsPipeline.getBindGroupLayout(0),
+            entries: [
+                { binding: 0, resource: { buffer: this.flagsInfoBuffer } },
+                { binding: 1, resource: { buffer: this.outCountBuffer } },
+                { binding: 2, resource: { buffer: scanner.input_buffer } },
+                { binding: 3, resource: { buffer: this.statsBuffer } },
+            ],
+        });
+
+        const pass = encoder.beginComputePass({ label: 'densify-prune flags' });
+        pass.setPipeline(this.flagsPipeline);
+        pass.setBindGroup(0, bindGroup);
+        pass.dispatchWorkgroups(Math.ceil(this.numPoints / 256));
+        pass.end();
+
         scanner.scan(encoder);
         return scanner.output_buffer;
     }
@@ -360,13 +424,15 @@ export class DensifyPrunePass {
         return this.outTotalBuffer;
     }
 
+    // Limits growth to maxOutPoints by downgrading densify requests to keep
     encodeCapToMax(
         encoder: GPUCommandEncoder,
-        outOffsetBuffer: GPUBuffer,
+        densifyRanksBuffer: GPUBuffer,
         maxOutPoints: number
     ): void {
         const maxOut = Math.max(0, Math.floor(maxOutPoints));
-        const uni = new Uint32Array([this.numPoints, maxOut, 0, 0]);
+        const startRank = Math.floor(Math.random() * 0xffffffff);
+        const uni = new Uint32Array([this.numPoints, maxOut, startRank, 0]);
         this.device.queue.writeBuffer(this.capInfoBuffer, 0, uni);
 
         const bindGroup = this.device.createBindGroup({
@@ -374,9 +440,10 @@ export class DensifyPrunePass {
             layout: this.capPipeline.getBindGroupLayout(0),
             entries: [
                 { binding: 0, resource: { buffer: this.capInfoBuffer } },
-                { binding: 1, resource: { buffer: outOffsetBuffer } },
-                { binding: 2, resource: { buffer: this.outCountBuffer } },
-                { binding: 3, resource: { buffer: this.actionBuffer } },
+                { binding: 1, resource: { buffer: densifyRanksBuffer } },
+                { binding: 2, resource: { buffer: this.statsBuffer } },
+                { binding: 3, resource: { buffer: this.outCountBuffer } },
+                { binding: 4, resource: { buffer: this.actionBuffer } },
             ],
         });
 
@@ -406,7 +473,8 @@ export class DensifyPrunePass {
             maxFromGaussian = Math.min(maxFromGaussian, n + maxNew);
         }
 
-        return Math.max(0, maxFromGaussian);
+        // The cap only limits growth, so never go below the current count
+        return Math.max(n, maxFromGaussian);
     }
 
     encodeDecision(encoder: GPUCommandEncoder, inputs: DensifyPruneInputs): DensifyPruneOutputs {
@@ -454,14 +522,14 @@ export class DensifyPrunePass {
         return { actionBuffer: this.actionBuffer, outCountBuffer: this.outCountBuffer };
     }
 
-    /** Convenience milestone-1 encoder: decide + prefix sum + total_out. */
+    // Decide + growth cap + prefix sum + total_out
     encodePrepare(encoder: GPUCommandEncoder, inputs: DensifyPruneInputs): DensifyPrunePrepared {
         const maxOutPoints = this.computeMaxOutPoints(inputs.pointCloud);
         const outputs = this.encodeDecision(encoder, inputs);
 
-        // First scan to compute offsets; clamp counts/actions to capacity; rescan to get final offsets.
-        const outOffsetBufferPre = this.encodePrefixSum(encoder);
-        this.encodeCapToMax(encoder, outOffsetBufferPre, maxOutPoints);
+        // Rank the densify candidates
+        const densifyRanks = this.encodeDensifyRanks(encoder);
+        this.encodeCapToMax(encoder, densifyRanks, maxOutPoints);
         const outOffsetBuffer = this.encodePrefixSum(encoder);
         const outTotalBuffer = this.encodeTotalOut(encoder, outOffsetBuffer);
         return { ...outputs, outOffsetBuffer, outTotalBuffer, maxOutPoints };
