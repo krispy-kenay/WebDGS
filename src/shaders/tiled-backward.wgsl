@@ -54,7 +54,7 @@ fn main_geometry_backward(@builtin(global_invocation_id) global_id: vec3<u32>) {
     // grad_conics
     let dL_dconic = vec3<f32>(
         atomicLoadFloat(&grad_conics[idx * 4u + 0u]),
-        atomicLoadFloat(&grad_conics[idx * 4u + 1u]),
+        0.5 * atomicLoadFloat(&grad_conics[idx * 4u + 1u]),
         atomicLoadFloat(&grad_conics[idx * 4u + 3u])
     );
     
@@ -89,7 +89,7 @@ fn main_geometry_backward(@builtin(global_invocation_id) global_id: vec3<u32>) {
     
     // Compute Projection Gradient
     let viewport = vec2<f32>(settings.viewport_x, settings.viewport_y);
-    let dL_dmean2D_ndc = dL_dmean2D_px * 0.5 * viewport; 
+    let dL_dmean2D_ndc = dL_dmean2D_px * vec2<f32>(0.5, -0.5) * viewport;
     
     let view_proj = camera.proj * camera.view; 
     let p_hom = view_proj * vec4<f32>(mean3D, 1.0);
@@ -130,11 +130,11 @@ fn main_geometry_backward(@builtin(global_invocation_id) global_id: vec3<u32>) {
         vec3<f32>(0.0, 0.0, 0.0)
     );
     
-    // view matrix 3x3
+    // view matrix 3x3 built like covariance2D in common.wgsl
     let W = mat3x3<f32>(
-        view[0].xyz,
-        view[1].xyz,
-        view[2].xyz
+        view[0].x, view[1].x, view[2].x,
+        view[0].y, view[1].y, view[2].y,
+        view[0].z, view[1].z, view[2].z
     );
     
     let T_mat = W * J;
