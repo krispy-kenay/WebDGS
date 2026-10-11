@@ -335,6 +335,7 @@ export class DensifyPrunePass {
         );
 
         if (this.prefixScanner && this.prefixScannerCapacity < this.numPoints) {
+            this.prefixScanner.destroy();
             this.prefixScanner = undefined;
             this.prefixScannerCapacity = 0;
         }
@@ -358,6 +359,7 @@ export class DensifyPrunePass {
 
     private ensurePrefixScanner(): PrefixScanner {
         if (!this.prefixScanner || this.prefixScannerCapacity < this.numPoints) {
+            this.prefixScanner?.destroy();
             this.prefixScannerCapacity = Math.max(1, this.numPoints);
             this.prefixScanner = get_prefix_scanner(this.prefixScannerCapacity, this.device);
         }

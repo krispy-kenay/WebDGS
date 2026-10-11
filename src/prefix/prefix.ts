@@ -1,54 +1,52 @@
 /*
-    GPU Parallel Prefix Sum (Exclusive Scan) - TypeScript API
-    
+    GPU Parallel Prefix Sum (Exclusive Scan) 
+
     Usage follows the same pattern as sort.ts:
-    
+
     1. Create scanner: const scanner = get_prefix_scanner(max_elements, device)
-    2. Set count: device.queue.writeBuffer(scanner.info_buffer, 0, new Uint32Array([count, numWorkgroups, 0, 0]))
+    2. Set count: scanner.set_count(count)
     3. Write input: device.queue.writeBuffer(scanner.input_buffer, 0, inputData)
     4. Scan: scanner.scan(encoder)
     5. Read output: scanner.output_buffer contains exclusive prefix sums
-    
+
     The scanner also exposes the total sum in output_buffer[count-1] + input[count-1] if needed.
+    There is no size limit: block totals are scanned recursively, one level per factor of 512.
 */
 
 import prefix_sum_wgsl from './prefix_sum.wgsl';
 
 const WORKGROUP_SIZE = 256;
 const ELEMENTS_PER_BLOCK = WORKGROUP_SIZE * 2;  // 512 elements per workgroup
-const BLOCKS_PER_THREAD = 32;  // Phase 2 processes this many blocks per thread
-const MAX_BLOCKS = WORKGROUP_SIZE * BLOCKS_PER_THREAD;  // 4096 blocks max
 
 export interface PrefixScannerConfig {
     maxElements: number;
 }
 
 export interface PrefixScanner {
-    /** Encode the prefix sum passes to a command encoder */
+    // Encode the prefix sum passes to a command encoder
     scan: (encoder: GPUCommandEncoder) => void;
-    /** Uniform buffer containing count and num_workgroups */
+    // Uniform buffer containing count and num_workgroups
     info_buffer: GPUBuffer;
-    /** Input buffer - write your u32 values here before scanning */
+    // Input buffer - write your u32 values here before scanning
     input_buffer: GPUBuffer;
-    /** Output buffer - contains exclusive prefix sums after scanning */
+    // Output buffer - contains exclusive prefix sums after scanning
     output_buffer: GPUBuffer;
-    /** Block sums buffer (internal use, but exposed for debugging) */
+    // Block sums buffer of the first level
     block_sums_buffer: GPUBuffer;
-    /** Maximum number of elements this scanner can handle */
+    // Maximum number of elements this scanner can handle
     max_elements: number;
-    /** Update the element count and dispatch the scan (helper) */
+    // Update the element count and dispatch the scan (helper)
     set_count: (count: number) => { num_workgroups: number };
-    /** Destroy owned GPU buffers */
+    // Destroy owned GPU buffers
     destroy: () => void;
 }
 
-/** Configuration constants */
+// Configuration constants
 export const PREFIX_CONSTANTS = {
     WORKGROUP_SIZE,
     ELEMENTS_PER_BLOCK,
-    BLOCKS_PER_THREAD,
-    MAX_BLOCKS,
-    MAX_ELEMENTS: MAX_BLOCKS * ELEMENTS_PER_BLOCK,
+    // Kept for compatibility
+    MAX_ELEMENTS: 8192 * ELEMENTS_PER_BLOCK,
 };
 
 function create_pipelines(device: GPUDevice) {
@@ -105,17 +103,6 @@ function create_pipelines(device: GPUDevice) {
                 },
             },
         }),
-        scan_blocks: device.createComputePipeline({
-            label: 'prefix sum - scan blocks',
-            layout: pipeline_layout,
-            compute: {
-                module,
-                entryPoint: 'scan_blocks',
-                constants: {
-                    WORKGROUP_SIZE,
-                },
-            },
-        }),
         add_offsets: device.createComputePipeline({
             label: 'prefix sum - add offsets',
             layout: pipeline_layout,
@@ -132,126 +119,150 @@ function create_pipelines(device: GPUDevice) {
 
 /**
  * Create a GPU prefix sum scanner.
- * 
+ *
  * @param maxElements - Maximum number of elements to scan
  * @param device - WebGPU device
  * @returns PrefixScanner object with scan method and buffers
  */
 export function get_prefix_scanner(maxElements: number, device: GPUDevice): PrefixScanner {
-    // Calculate buffer sizes
-    const maxWorkgroups = Math.ceil(maxElements / ELEMENTS_PER_BLOCK);
-
-    // Validate size limits (our implementation handles up to 4096 workgroups = 2M elements)
-    if (maxWorkgroups > MAX_BLOCKS) {
-        console.warn(
-            `Prefix sum for ${maxElements} elements requires ${maxWorkgroups} workgroups. ` +
-            `Maximum supported is ${MAX_BLOCKS} workgroups (${MAX_BLOCKS * ELEMENTS_PER_BLOCK} elements).`
-        );
-    }
-
-    // Create pipelines
     const pipelines = create_pipelines(device);
-
-    // Create buffers
-    const info_buffer = device.createBuffer({
-        label: 'prefix sum info',
-        size: 16, // 4 u32s: count, num_workgroups, pad, pad
-        usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-    });
+    const usage = GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC;
+    const maxPerDimension = device.limits.maxComputeWorkgroupsPerDimension;
 
     const input_buffer = device.createBuffer({
         label: 'prefix sum input',
-        size: maxElements * 4,
-        usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC,
+        size: Math.max(maxElements, 1) * 4,
+        usage,
     });
 
     const output_buffer = device.createBuffer({
         label: 'prefix sum output',
-        size: maxElements * 4,
-        usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC,
+        size: Math.max(maxElements, 1) * 4,
+        usage,
     });
 
-    const block_sums_buffer = device.createBuffer({
-        label: 'prefix sum block sums',
-        size: Math.max(maxWorkgroups * 4, 16), // At least 16 bytes
-        usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC,
-    });
-
-    // Create bind group
-    const bind_group = device.createBindGroup({
-        label: 'prefix sum',
-        layout: pipelines.bind_group_layout,
-        entries: [
-            { binding: 0, resource: { buffer: info_buffer } },
-            { binding: 1, resource: { buffer: input_buffer } },
-            { binding: 2, resource: { buffer: output_buffer } },
-            { binding: 3, resource: { buffer: block_sums_buffer } },
-        ],
-    });
-
-    // Track current workgroup count (set by set_count)
-    let currentNumWorkgroups = 1;
-
-    /**
-     * Set the element count and calculate dispatch size.
-     * Must be called before scan() with the actual count.
-     */
-    function set_count(count: number): { num_workgroups: number } {
-        const num_workgroups = Math.ceil(count / ELEMENTS_PER_BLOCK);
-        currentNumWorkgroups = num_workgroups;
-
-        // Write info buffer
-        device.queue.writeBuffer(info_buffer, 0, new Uint32Array([count, num_workgroups, 0, 0]));
-
-        return { num_workgroups };
+    // One level per factor of 512. level L scans input, writes output and its block totals to block_sums,
+    // which are the input of level L + 1. The last level has a single block.
+    interface Level {
+        info: GPUBuffer;
+        input: GPUBuffer;
+        output: GPUBuffer;
+        block_sums: GPUBuffer;
+        scan_bind_group?: GPUBindGroup;
+        add_bind_group?: GPUBindGroup;
+    }
+    const levels: Level[] = [];
+    let capacity = Math.max(maxElements, 1);
+    let levelInput = input_buffer;
+    let levelOutput = output_buffer;
+    for (;;) {
+        const blocks = Math.ceil(capacity / ELEMENTS_PER_BLOCK);
+        const level: Level = {
+            info: device.createBuffer({
+                label: `prefix sum info L${levels.length}`,
+                size: 16,
+                usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+            }),
+            input: levelInput,
+            output: levelOutput,
+            block_sums: device.createBuffer({
+                label: `prefix sum block sums L${levels.length}`,
+                size: Math.max(blocks * 4, 16),
+                usage,
+            }),
+        };
+        levels.push(level);
+        if (blocks <= 1) break;
+        capacity = blocks;
+        levelInput = level.block_sums;
+        levelOutput = device.createBuffer({ label: `prefix sum output L${levels.length}`, size: blocks * 4, usage });
     }
 
-    /**
-     * Record prefix sum passes to command encoder.
-     * Call set_count() first to set the element count.
-     */
+    for (let l = 0; l < levels.length; l++) {
+        const level = levels[l];
+        level.scan_bind_group = device.createBindGroup({
+            label: `prefix sum scan L${l}`,
+            layout: pipelines.bind_group_layout,
+            entries: [
+                { binding: 0, resource: { buffer: level.info } },
+                { binding: 1, resource: { buffer: level.input } },
+                { binding: 2, resource: { buffer: level.output } },
+                { binding: 3, resource: { buffer: level.block_sums } },
+            ],
+        });
+        if (l + 1 < levels.length) {
+            // The next level's output is the exclusive scan of this level's block totals
+            level.add_bind_group = device.createBindGroup({
+                label: `prefix sum add L${l}`,
+                layout: pipelines.bind_group_layout,
+                entries: [
+                    { binding: 0, resource: { buffer: level.info } },
+                    { binding: 1, resource: { buffer: level.input } },
+                    { binding: 2, resource: { buffer: level.output } },
+                    { binding: 3, resource: { buffer: levels[l + 1].output } },
+                ],
+            });
+        }
+    }
+
+    // Blocks per level for the current count
+    let activeBlocks: number[] = [1];
+
+    function set_count(count: number): { num_workgroups: number } {
+        activeBlocks = [];
+        let levelCount = Math.max(0, Math.min(count, maxElements));
+        for (const level of levels) {
+            const blocks = Math.max(1, Math.ceil(levelCount / ELEMENTS_PER_BLOCK));
+            device.queue.writeBuffer(level.info, 0, new Uint32Array([levelCount, blocks, 0, 0]));
+            activeBlocks.push(blocks);
+            if (blocks === 1) break;
+            levelCount = blocks;
+        }
+        return { num_workgroups: activeBlocks[0] };
+    }
+
+    // Spread blocks workgroups over a 2D dispatch to stay within maxComputeWorkgroupsPerDimension
+    function dispatch(pass: GPUComputePassEncoder, blocks: number) {
+        const x = Math.min(blocks, maxPerDimension);
+        pass.dispatchWorkgroups(x, Math.ceil(blocks / x));
+    }
+
     function scan(encoder: GPUCommandEncoder) {
-        // Phase 1: Local scan within each workgroup
-        {
-            const pass = encoder.beginComputePass({ label: 'prefix sum - local scan' });
+        // Up: local scan of every level
+        for (let l = 0; l < activeBlocks.length; l++) {
+            const pass = encoder.beginComputePass({ label: `prefix sum - local scan L${l}` });
             pass.setPipeline(pipelines.local_scan);
-            pass.setBindGroup(0, bind_group);
-            pass.dispatchWorkgroups(currentNumWorkgroups);
+            pass.setBindGroup(0, levels[l].scan_bind_group!);
+            dispatch(pass, activeBlocks[l]);
             pass.end();
         }
 
-        // Phase 2: Scan block sums (single workgroup)
-        if (currentNumWorkgroups > 1) {
-            const pass = encoder.beginComputePass({ label: 'prefix sum - scan blocks' });
-            pass.setPipeline(pipelines.scan_blocks);
-            pass.setBindGroup(0, bind_group);
-            pass.dispatchWorkgroups(1);
-            pass.end();
-        }
-
-        // Phase 3: Add block offsets to each element
-        if (currentNumWorkgroups > 1) {
-            const pass = encoder.beginComputePass({ label: 'prefix sum - add offsets' });
+        // Down: add the scanned block offsets, from the second-highest level to the first
+        for (let l = activeBlocks.length - 2; l >= 0; l--) {
+            const pass = encoder.beginComputePass({ label: `prefix sum - add offsets L${l}` });
             pass.setPipeline(pipelines.add_offsets);
-            pass.setBindGroup(0, bind_group);
-            pass.dispatchWorkgroups(currentNumWorkgroups);
+            pass.setBindGroup(0, levels[l].add_bind_group!);
+            dispatch(pass, activeBlocks[l]);
             pass.end();
         }
     }
 
     return {
         scan,
-        info_buffer,
+        info_buffer: levels[0].info,
         input_buffer,
         output_buffer,
-        block_sums_buffer,
+        block_sums_buffer: levels[0].block_sums,
         max_elements: maxElements,
         set_count,
         destroy: () => {
-            info_buffer.destroy();
             input_buffer.destroy();
             output_buffer.destroy();
-            block_sums_buffer.destroy();
+            for (const level of levels) {
+                level.info.destroy();
+                level.block_sums.destroy();
+                if (level.output !== output_buffer) level.output.destroy();
+            }
         },
     };
 }
