@@ -110,12 +110,36 @@ fn covariance2D(cov_3D: array<f32, 6>, mean_view: vec4<f32>, focal: vec2<f32>, v
 // Atomic Float Utilities (Fixed Point)
 const GRAD_SCALE: f32 = 1000000.0;
 
-fn atomicAddFloat(atom: ptr<storage, atomic<i32>, read_write>, value: f32) {
-    let fixed_val = i32(value * GRAD_SCALE);
-    atomicAdd(atom, fixed_val);
+struct FixedPoint64 {
+    lo: atomic<u32>,
+    hi: atomic<u32>,
+};
+
+fn atomicAddFloat(acc: ptr<storage, FixedPoint64, read_write>, value: f32) {
+    let scaled = value * GRAD_SCALE;
+    var add_lo: u32;
+    var add_hi: u32;
+    if (abs(scaled) < 2147483648.0) {
+        let fixed_val = i32(scaled);
+        add_lo = bitcast<u32>(fixed_val);
+        add_hi = select(0u, 0xFFFFFFFFu, fixed_val < 0);
+    } else {
+        let hi_f = floor(scaled / 4294967296.0);
+        add_lo = u32(scaled - hi_f * 4294967296.0);
+        add_hi = bitcast<u32>(i32(hi_f));
+    }
+    let old_lo = atomicAdd(&(*acc).lo, add_lo);
+    add_hi += select(0u, 1u, old_lo > 0xFFFFFFFFu - add_lo);
+    if (add_hi != 0u) {
+        atomicAdd(&(*acc).hi, add_hi);
+    }
 }
 
-fn atomicLoadFloat(atom: ptr<storage, atomic<i32>, read_write>) -> f32 {
-    let fixed_val = atomicLoad(atom);
-    return f32(fixed_val) / GRAD_SCALE;
+fn atomicLoadFloat(acc: ptr<storage, FixedPoint64, read_write>) -> f32 {
+    let lo = atomicLoad(&(*acc).lo);
+    let hi = bitcast<i32>(atomicLoad(&(*acc).hi));
+    if ((hi == 0 && lo < 0x80000000u) || (hi == -1 && lo >= 0x80000000u)) {
+        return f32(bitcast<i32>(lo)) / GRAD_SCALE;
+    }
+    return (f32(hi) * 4294967296.0 + f32(lo)) / GRAD_SCALE;
 }

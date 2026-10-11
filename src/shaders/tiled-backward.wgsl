@@ -9,10 +9,10 @@
 @group(0) @binding(1) var<uniform> settings: RenderSettings;
 
 @group(1) @binding(0) var<storage, read> gaussians: array<Gaussian>;
-@group(1) @binding(1) var<storage, read_write> grad_means_2d: array<atomic<i32>>; 
-@group(1) @binding(2) var<storage, read_write> grad_conics: array<atomic<i32>>;
-@group(1) @binding(3) var<storage, read_write> grad_opacity: array<atomic<i32>>;
-@group(1) @binding(4) var<storage, read_write> grad_colors: array<atomic<i32>>; 
+@group(1) @binding(1) var<storage, read_write> grad_means_2d: array<FixedPoint64>; 
+@group(1) @binding(2) var<storage, read_write> grad_conics: array<FixedPoint64>;
+@group(1) @binding(3) var<storage, read_write> grad_opacity: array<FixedPoint64>;
+@group(1) @binding(4) var<storage, read_write> grad_colors: array<FixedPoint64>; 
 
 // Packed Gradient Struct
 struct GaussianGradient {

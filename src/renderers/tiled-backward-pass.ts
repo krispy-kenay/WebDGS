@@ -246,10 +246,11 @@ export class TiledBackwardPass {
         });
 
         // Atomic Buffers
-        this.gradMeans2D = createBuffer(device, 'grad-means-2d', this.numPoints * 2 * 4, GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST);
-        this.gradConics = createBuffer(device, 'grad-conics', this.numPoints * 4 * 4, GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST);
-        this.gradOpacity = createBuffer(device, 'grad-opacity', this.numPoints * 4, GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST);
-        this.gradColors = createBuffer(device, 'grad-colors', this.numPoints * 3 * 4, GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST);
+        const ACC_BYTES = 8;
+        this.gradMeans2D = createBuffer(device, 'grad-means-2d', this.numPoints * 2 * ACC_BYTES, GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST);
+        this.gradConics = createBuffer(device, 'grad-conics', this.numPoints * 4 * ACC_BYTES, GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST);
+        this.gradOpacity = createBuffer(device, 'grad-opacity', this.numPoints * ACC_BYTES, GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST);
+        this.gradColors = createBuffer(device, 'grad-colors', this.numPoints * 3 * ACC_BYTES, GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST);
 
         // Output Buffers
         this.outGradientsBuffer = createBuffer(device, 'out-gradients', this.numPoints * 32, GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST);
