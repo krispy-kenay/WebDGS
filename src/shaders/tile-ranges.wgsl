@@ -61,9 +61,6 @@ fn build_tile_offsets(
     // Compute linear index from 2D dispatch
     let idx = gid.y * num_wg.x * workgroupSize + gid.x;
     
-    // Constants matching sort.ts/swgl configuration
-    let keys_per_workgroup = 256u * 15u;
-    
     // Define the range of sorted keys to process
     let total_entries = pipeline_stats.total_tile_entries;
     let padded_count = total_entries;

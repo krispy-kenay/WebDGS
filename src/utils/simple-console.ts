@@ -17,8 +17,3 @@ export function timeLog() {
   const d = performance.now() - t;
   log(`${d.toFixed(0)} ms`);
 }
-
-export function timeReturn(){
-  const d = performance.now() - t;
-  return d;
-}

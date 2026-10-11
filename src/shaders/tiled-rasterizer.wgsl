@@ -97,9 +97,6 @@ fn tiled_rasterize(
 
     let pixel = vec2<f32>(f32(pixel_x) + 0.5, f32(pixel_y) + 0.5);
     
-    // Constants matching sort.ts/swgl configuration
-    let keys_per_workgroup = 256u * 15u;
-    
     // Define the range of sorted keys to process
     let total_entries = pipeline_stats.total_tile_entries;
     let padded_count = total_entries;

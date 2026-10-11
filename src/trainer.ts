@@ -147,8 +147,8 @@ export class Trainer {
             primitive: { topology: 'triangle-list' }
         });
 
-        const maxStorage = this.device.limits.maxStorageBufferBindingSize;
-        const defaultMaxBytes = Math.min(128 * 1024 * 1024, maxStorage);
+        // Largest single buffer the device allows
+        const maxBufferBytes = Math.min(this.device.limits.maxBufferSize, this.device.limits.maxStorageBufferBindingSize);
         this.densifyPruneConfig = {
             schedule: {
                 enabled: true,
@@ -159,7 +159,7 @@ export class Trainer {
             metricViews: 10,
             metricDownscale: 2,
             metricThreshold: 0.5,
-            maxBufferBytes: defaultMaxBytes,
+            maxBufferBytes,
             maxNewPointsPerStep: 5000,
             pruneOpacity: 0.01,
             cloneThresholdCount: 500,
@@ -167,7 +167,6 @@ export class Trainer {
         };
 
         this.densifyPrune = new DensifyPrunePass(this.device, {
-            strategy: 'gpu_rebuild',
             numViews: this.densifyPruneConfig.metricViews,
             maxBufferBytes: this.densifyPruneConfig.maxBufferBytes,
             maxNewPointsPerStep: this.densifyPruneConfig.maxNewPointsPerStep,
@@ -191,16 +190,7 @@ export class Trainer {
         return req;
     }
 
-    /**
-     * Debug helper: allocate a new point cloud with the same per-point layout and request a swap.
-     */
-    requestResizeTo(numPoints: number): void {
-        if (!this.pointCloud) return;
-        const resized = allocatePointCloudLike(this.device, this.pointCloud, { numPoints });
-        this.requestPointCloudSwap(resized);
-    }
-
-    /** Apply a point cloud swap immediately (call only at a safe submission boundary). */
+    // Apply a point cloud swap immediately
     applyPointCloudSwap(request: PointCloudSwapRequest): void {
         const oldPointCloud = this.pointCloud;
         const oldOptimizerParams = this.optimizer?.getHyperparameters();

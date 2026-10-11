@@ -1,23 +1,7 @@
-import { Mat3, mat3, Mat4, mat4, Vec3, vec3, Vec2, vec2 } from 'wgpu-matrix';
-import { log, time, timeLog } from '../utils/simple-console';
-
-interface CameraJson {
-  id: number
-  img_name: string
-  width: number
-  height: number
-  position: number[]
-  rotation: number[][]
-  fx: number
-  fy: number
-};
+import { Mat4, mat4, Vec3, vec3, Vec2, vec2 } from 'wgpu-matrix';
 
 function focal2fov(focal: number, pixels: number): number {
   return 2 * Math.atan(pixels / (2 * focal));
-}
-
-function fov2focal(fov: number, pixels: number): number {
-  return pixels / (2 * Math.tan(fov * 0.5));
 }
 
 function get_view_matrix(r: Mat4, t: Vec3): Mat4 {
@@ -55,38 +39,6 @@ function get_projection_matrix(znear: number, zfar: number, fov_x: number, fov_y
   return p;
 }
 
-interface CameraPreset {
-  position: Vec3,
-  rotation: Mat4,
-}
-
-export async function load_camera_presets(file: BlobPart): Promise<CameraPreset[]> {
-  const blob = file instanceof Blob ? file : new Blob([file]);
-  const arrayBuffer = await new Promise((resolve, reject) => {
-    const reader = new FileReader();
-
-    reader.onload = function (event) {
-      resolve(event.target.result);  // Resolve the promise with the ArrayBuffer
-    };
-
-    reader.onerror = reject;  // Reject the promise in case of an error
-    reader.readAsArrayBuffer(blob);
-  });
-  const text = new TextDecoder().decode(arrayBuffer as ArrayBuffer);
-  const json = JSON.parse(text);
-  log(`loaded cameras count: ${json.length}`);
-
-  return json.map((j: CameraJson): CameraPreset => {
-    const position = vec3.clone(j.position);
-    // const rotation = mat3.create(...j.rotation.flat());
-    const rotation = mat4.fromMat3(mat3.create(...j.rotation.flat()));
-
-    return {
-      position,
-      rotation,
-    };
-  });
-}
 
 
 const c_size_vec2 = 4 * 2;

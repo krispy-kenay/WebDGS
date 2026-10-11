@@ -1,7 +1,7 @@
 /*
     GPU Parallel Prefix Sum (Exclusive Scan) 
 
-    Usage follows the same pattern as sort.ts:
+    Usage:
 
     1. Create scanner: const scanner = get_prefix_scanner(max_elements, device)
     2. Set count: scanner.set_count(count)
@@ -17,10 +17,6 @@ import prefix_sum_wgsl from './prefix_sum.wgsl';
 
 const WORKGROUP_SIZE = 256;
 const ELEMENTS_PER_BLOCK = WORKGROUP_SIZE * 2;  // 512 elements per workgroup
-
-export interface PrefixScannerConfig {
-    maxElements: number;
-}
 
 export interface PrefixScanner {
     // Encode the prefix sum passes to a command encoder
@@ -41,13 +37,6 @@ export interface PrefixScanner {
     destroy: () => void;
 }
 
-// Configuration constants
-export const PREFIX_CONSTANTS = {
-    WORKGROUP_SIZE,
-    ELEMENTS_PER_BLOCK,
-    // Kept for compatibility
-    MAX_ELEMENTS: 8192 * ELEMENTS_PER_BLOCK,
-};
 
 function create_pipelines(device: GPUDevice) {
     const module = device.createShaderModule({
@@ -117,13 +106,7 @@ function create_pipelines(device: GPUDevice) {
     };
 }
 
-/**
- * Create a GPU prefix sum scanner.
- *
- * @param maxElements - Maximum number of elements to scan
- * @param device - WebGPU device
- * @returns PrefixScanner object with scan method and buffers
- */
+// Create a GPU prefix sum scanner for up to maxElements values
 export function get_prefix_scanner(maxElements: number, device: GPUDevice): PrefixScanner {
     const pipelines = create_pipelines(device);
     const usage = GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC;

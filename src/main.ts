@@ -197,6 +197,7 @@ async function initializeWebGPU(canvas: HTMLCanvasElement, context: GPUCanvasCon
       requiredLimits: {
         maxComputeWorkgroupStorageSize: adapter.limits.maxComputeWorkgroupStorageSize,
         maxStorageBufferBindingSize: adapter.limits.maxStorageBufferBindingSize,
+        maxBufferSize: adapter.limits.maxBufferSize,
       },
     });
     state.device = device;

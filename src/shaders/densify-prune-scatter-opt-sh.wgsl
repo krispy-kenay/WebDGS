@@ -16,7 +16,8 @@ struct ScatterInfo {
 @group(2) @binding(0) var<storage, read_write> out_param_sh: array<f32>;
 @group(2) @binding(1) var<storage, read_write> out_state_sh: array<vec2<f32>>;
 
-const SH_FLOATS_PER_POINT: u32 = 48u;
+// DC only, matches OPTIMIZER_LAYOUT.SH_FLOATS_PER_POINT
+const SH_FLOATS_PER_POINT: u32 = 3u;
 
 fn write_slot(dst_idx: u32, src_idx: u32, is_new: bool) {
   let reset = (info.reset_new_state != 0u) && is_new;

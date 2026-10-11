@@ -61,12 +61,12 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
     let base_word = idx * SH_WORDS_PER_POINT;
     
     {
-        let c0 = param_sh[idx * 48u + 0u];
-        let c1 = param_sh[idx * 48u + 1u];
+        let c0 = param_sh[idx * 3u + 0u];
+        let c1 = param_sh[idx * 3u + 1u];
         sh_buffer[base_word + 0u] = pack2x16float(vec2<f32>(c0, c1));
     }
     {
-        let c2 = param_sh[idx * 48u + 2u];
+        let c2 = param_sh[idx * 3u + 2u];
         let old_word_1 = sh_buffer[base_word + 1u];
         let unpacked_1 = unpack2x16float(old_word_1);
         let c3 = unpacked_1.y;

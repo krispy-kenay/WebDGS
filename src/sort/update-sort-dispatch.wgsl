@@ -15,7 +15,7 @@ struct TilePipelineStats {
 @group(0) @binding(1) var<storage, read_write> indirect_dispatch: array<u32>;
 @group(0) @binding(2) var<storage, read> pipeline_stats: TilePipelineStats;
 
-// Constants from sort.ts C object
+// Constants from the C object in sort_dynamic.ts
 const histogram_wg_size = 256u;
 const rs_histogram_block_rows = 15u;
 const rs_scatter_block_rows = 15u;

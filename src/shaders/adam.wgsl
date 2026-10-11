@@ -160,7 +160,7 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
     // Update Color (DC)
     {
         for (var c = 0u; c < 3u; c++) {
-             let sh_idx = idx * 48u + c; 
+             let sh_idx = idx * 3u + c;
              
              let p = param_sh[sh_idx];
              let m_vec = state_sh[sh_idx];

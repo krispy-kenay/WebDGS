@@ -7,7 +7,8 @@ import { TiledBackwardResources } from './tiled-backward-pass';
 export const OPTIMIZER_LAYOUT = {
     OPT_VEC4_BYTES: 48,
     OPT_FLOAT_BYTES: 12,
-    SH_FLOATS_PER_POINT: 48,
+    // Only the DC colour is trained, so higher SH bands get no optimizer state
+    SH_FLOATS_PER_POINT: 3,
 } as const;
 
 export interface OptimizerStateBuffers {
@@ -212,13 +213,12 @@ export class Optimizer {
                 let s1 = unpack2x16float(g.scale[1]);
                 opt_scale[idx].param = vec4<f32>(s0.x, s0.y, s1.x, 0.0);
 
-                // SH
-                let base = idx * 24u;
-                for (var i = 0u; i < 24u; i++) {
-                    let pair = unpack2x16float(sh_buffer[base + i]);
-                    param_sh[idx * 48u + i * 2u] = pair.x;
-                    param_sh[idx * 48u + i * 2u + 1u] = pair.y;
-                }
+                // SH (DC only)
+                let dc01 = unpack2x16float(sh_buffer[idx * 24u]);
+                let dc2 = unpack2x16float(sh_buffer[idx * 24u + 1u]).x;
+                param_sh[idx * 3u] = dc01.x;
+                param_sh[idx * 3u + 1u] = dc01.y;
+                param_sh[idx * 3u + 2u] = dc2;
             }
         `;
 

@@ -10,14 +10,11 @@ import scatterOptFloatWGSL from '../shaders/densify-prune-scatter-opt-float.wgsl
 import scatterOptShWGSL from '../shaders/densify-prune-scatter-opt-sh.wgsl';
 import scatterOptScaleWGSL from '../shaders/densify-prune-scatter-opt-scale.wgsl';
 import { get_prefix_scanner, PrefixScanner } from '../prefix/prefix';
-import { OptimizerStateBuffers } from './optimizer';
-
-export type DensifyPruneStrategy = 'cpu_rebuild' | 'gpu_rebuild';
+import { OPTIMIZER_LAYOUT, OptimizerStateBuffers } from './optimizer';
 
 export type DensifyPruneAction = 0 | 1 | 2 | 3;
 
 export interface DensifyPruneConfig {
-    strategy: DensifyPruneStrategy;
     numViews?: number;
     cloneThreshold?: number;
     splitThreshold?: number;
@@ -113,13 +110,12 @@ export class DensifyPrunePass {
     constructor(device: GPUDevice, config?: Partial<DensifyPruneConfig>) {
         this.device = device;
         this.config = {
-            strategy: 'cpu_rebuild',
             numViews: 1,
             cloneThreshold: 0,
             splitThreshold: 0,
             pruneThreshold: 0,
             maxNewPointsPerStep: 0,
-            maxBufferBytes: 128 * 1024 * 1024,
+            maxBufferBytes: Math.min(device.limits.maxBufferSize, device.limits.maxStorageBufferBindingSize),
             ...config,
         };
 
@@ -457,11 +453,11 @@ export class DensifyPrunePass {
     }
 
     private computeMaxOutPoints(pointCloud: PointCloud): number {
-        const maxBytes = this.config.maxBufferBytes ?? 128 * 1024 * 1024;
-        const safeBytes = Math.max(0, Math.floor(maxBytes));
+        const safeBytes = Math.max(0, Math.floor(this.config.maxBufferBytes ?? 0));
         const n = Math.max(1, pointCloud.num_points);
 
-        const bytesPerGaussian = Math.max(1, Math.floor(pointCloud.gaussian_3d_buffer.size / n));
+        // The optimizer's vec4 state outgrows the packed Gaussian
+        const bytesPerGaussian = Math.max(OPTIMIZER_LAYOUT.OPT_VEC4_BYTES, Math.floor(pointCloud.gaussian_3d_buffer.size / n));
         let maxFromGaussian = Math.floor(safeBytes / bytesPerGaussian);
 
         if (pointCloud.sh_buffer) {
@@ -745,13 +741,5 @@ export class DensifyPrunePass {
                 pass.end();
             }
         }
-    }
-
-    async applyActions(inputs: DensifyPruneInputs): Promise<PointCloud> {
-        this.ensureSize(inputs.pointCloud.num_points);
-        if (this.config.strategy === 'cpu_rebuild') {
-            throw new Error('DensifyPrunePass.applyActions(cpu_rebuild) not implemented');
-        }
-        throw new Error('DensifyPrunePass.applyActions(gpu_rebuild) not implemented');
     }
 }

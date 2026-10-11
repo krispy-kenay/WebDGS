@@ -1,5 +1,5 @@
 import { Mat4, mat4, Vec3, vec3, Quat, quat } from 'wgpu-matrix';
-import { log, time, timeLog } from './simple-console';
+import { log } from './simple-console';
 
 export interface CameraData {
     id: number;
