@@ -1,0 +1,307 @@
+/*
+ * Vendored copy of the yannickgachnang.com shared theme.
+ * Source: https://www.yannickgachnang.com/assets/theme.css (fetched 2026-10-12, v1.0.1)
+ * Change from upstream: the @font-face src points at the vendored ./fonts/ copy.
+ * Refresh by re-downloading from the source URL; do not edit tokens here.
+ */
+/*!
+ * yannickgachnang.com shared theme, v1.0.1 (2026-10-11)
+ * https://www.yannickgachnang.com/assets/theme.css
+ *
+ * Public, stable design API for the portfolio and sibling projects on the
+ * same domain (e.g. /lodestone/). Docs: /assets/THEME.md
+ *
+ * What loading this file does by itself:
+ *   - defines --yg-* custom properties on :root (light, dark, and dark via
+ *     prefers-color-scheme) and declares the Space Grotesk @font-face
+ *     (the font is only downloaded once something uses it)
+ *   - nothing else: every rule below targets an opt-in .yg-* class, so it
+ *     does not restyle a page that loads it
+ *
+ * Dark mode:
+ *   - <html data-theme="dark">  forces dark, <html data-theme="light"> forces light
+ *   - no data-theme attribute   follows prefers-color-scheme
+ *   - either attribute also works on any subtree element
+ *
+ * Stability policy (semver):
+ *   - names of --yg-* variables and .yg-* classes are public API;
+ *     they are never renamed or removed within a major version
+ *   - minor: new variables/classes; patch: value tweaks that keep intent
+ *     (e.g. a contrast fix). Breaking changes bump the major version and
+ *     ship as a new file (theme.v2.css); this file keeps working.
+ *
+ * Changelog:
+ *   1.0.1  2026-10-11  Font URL carries a ?v=<hash> cache-buster (stamped by
+ *                      scripts/bust.py). No token or class changes.
+ *   1.0.0  2026-10-11  First release: colours (light/dark), type, type scale,
+ *                      spacing, radii, shadows, accent edges, title lettering,
+ *                      opt-in classes.
+ *
+ * Space Grotesk: SIL Open Font License 1.1, /assets/fonts/OFL-SpaceGrotesk.txt
+ */
+
+@font-face {
+  font-family: "Space Grotesk";
+  font-weight: 300 700;
+  font-style: normal;
+  font-display: swap;
+  src: url("./fonts/SpaceGrotesk-var.woff2") format("woff2");
+}
+
+/* ── Tokens: light (default) ────────────────────────────────────────── */
+:root,
+[data-theme="light"] {
+  --yg-color-scheme: light;
+
+  /* Surfaces */
+  --yg-bg:           #dfe3ea;  /* page base (grey) */
+  --yg-card:         #e9ecf1;  /* raised card surface */
+  --yg-line:         #cfd5df;  /* hairlines, separators */
+  --yg-shadow-dark:  #b8bdc7;  /* lower-right neumorphic shadow */
+  --yg-shadow-light: #ffffff;  /* upper-left neumorphic highlight */
+
+  /* Text (all pass WCAG AA on --yg-bg and --yg-card) */
+  --yg-ink:          #0f172a;  /* headings, strong text */
+  --yg-body:         #334155;  /* body text */
+  --yg-muted:        #475569;  /* secondary text, chips */
+  --yg-accent:       #2563eb;  /* rules, fills, focus rings, edges */
+  --yg-accent-text:  #1d4ed8;  /* accent used as text or links */
+  --yg-accent-hover: #1e40af;  /* hover state of accent text/fills */
+  --yg-on-accent:    #ffffff;  /* text on an --yg-accent fill */
+  --yg-code-bg:      #0f172a;  /* code block background */
+  --yg-code-ink:     #e2e8f0;  /* code block text */
+
+  /* Brand gradient stops, base (0) to deepest blue (3) */
+  --yg-flow-0: #dfe3ea;
+  --yg-flow-1: #c9d6f2;
+  --yg-flow-2: #98b4f2;
+  --yg-flow-3: #5585f0;
+}
+
+/* ── Tokens: dark ───────────────────────────────────────────────────── */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --yg-color-scheme: dark;
+    --yg-bg:           #151c2b;
+    --yg-card:         #192132;
+    --yg-line:         #2a3549;
+    --yg-shadow-dark:  #0b0f19;
+    --yg-shadow-light: #222c40;
+    --yg-ink:          #e2e8f0;
+    --yg-body:         #c3cddd;
+    --yg-muted:        #94a3b8;
+    --yg-accent:       #7aa2ff;
+    --yg-accent-text:  #7aa2ff;
+    --yg-accent-hover: #a5c0ff;
+    --yg-on-accent:    #0b1220;
+    --yg-code-bg:      #0b1020;
+    --yg-code-ink:     #e2e8f0;
+    --yg-flow-0: #151c2b;
+    --yg-flow-1: #172446;
+    --yg-flow-2: #1d3a86;
+    --yg-flow-3: #355fd2;
+  }
+}
+
+[data-theme="dark"] {
+  --yg-color-scheme: dark;
+  --yg-bg:           #151c2b;
+  --yg-card:         #192132;
+  --yg-line:         #2a3549;
+  --yg-shadow-dark:  #0b0f19;
+  --yg-shadow-light: #222c40;
+  --yg-ink:          #e2e8f0;
+  --yg-body:         #c3cddd;
+  --yg-muted:        #94a3b8;
+  --yg-accent:       #7aa2ff;
+  --yg-accent-text:  #7aa2ff;
+  --yg-accent-hover: #a5c0ff;
+  --yg-on-accent:    #0b1220;
+  --yg-code-bg:      #0b1020;
+  --yg-code-ink:     #e2e8f0;
+  --yg-flow-0: #151c2b;
+  --yg-flow-1: #172446;
+  --yg-flow-2: #1d3a86;
+  --yg-flow-3: #355fd2;
+}
+
+/* ── Tokens: theme-independent ──────────────────────────────────────── */
+:root {
+  /* Type */
+  --yg-font:      "Space Grotesk", "Helvetica Neue", Arial, sans-serif;
+  --yg-font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, "DejaVu Sans Mono", monospace;
+
+  /* Type scale: a section title is the largest text in its section */
+  --yg-fs-display: clamp(3.6rem, 0.5rem + 14vw, 11.5rem); /* hero name */
+  --yg-fs-h1:      clamp(2.3rem, 1.5rem + 3vw, 3.5rem);   /* page title */
+  --yg-fs-h2:      clamp(1.6rem, 1.25rem + 1.1vw, 2rem);  /* section title */
+  --yg-fs-h3:      1.15rem;                               /* card / entry title */
+  --yg-fs-body:    1.0625rem;
+  --yg-fs-small:   0.875rem;
+  --yg-fs-label:   0.78rem;                               /* eyebrows, tags */
+  --yg-lh-body:    1.65;
+
+  /* Title lettering */
+  --yg-title-weight:     700;       /* section + page titles */
+  --yg-title-tracking:   -0.015em;
+  --yg-title-leading:    1.15;
+  --yg-display-weight:   700;       /* hero name */
+  --yg-display-tracking: -0.035em;
+  --yg-display-leading:  0.86;
+  --yg-label-weight:     700;       /* eyebrow / number label */
+  --yg-label-tracking:   0.24em;
+  --yg-eyebrow-rule:     2rem;      /* length of the rule before an eyebrow */
+  --yg-eyebrow-rule-gap: 0.6rem;    /* gap between rule and eyebrow text */
+
+  /* Spacing scale */
+  --yg-space-1: 0.25rem;
+  --yg-space-2: 0.5rem;
+  --yg-space-3: 0.75rem;
+  --yg-space-4: 1rem;
+  --yg-space-5: 1.5rem;
+  --yg-space-6: 2rem;
+  --yg-space-7: 2.5rem;
+  --yg-space-8: 4rem;
+
+  /* Shape */
+  --yg-radius-sm:   6px;
+  --yg-radius-md:   12px;
+  --yg-radius-lg:   16px;
+  --yg-radius-pill: 999px;
+
+  /* Depth (neumorphic): twin shadows that follow the theme */
+  --yg-raised:    6px 6px 16px var(--yg-shadow-dark), -6px -6px 16px var(--yg-shadow-light);
+  --yg-raised-sm: 3px 3px 8px var(--yg-shadow-dark), -3px -3px 8px var(--yg-shadow-light);
+  --yg-inset:     inset 2px 2px 6px var(--yg-shadow-dark), inset -2px -2px 6px var(--yg-shadow-light);
+
+  /* Accent edges (the blue top/left rule on cards) */
+  --yg-rule: 3px;
+  --yg-edge: var(--yg-rule) solid var(--yg-accent);
+
+  /* Layout */
+  --yg-max-width:  1100px;
+  --yg-nav-height: 72px;
+}
+
+/* ── Opt-in classes ─────────────────────────────────────────────────── */
+
+/* Base: put .yg-base on <body> (or any wrapper) to adopt page defaults */
+.yg-base {
+  color-scheme: var(--yg-color-scheme);
+  background: var(--yg-bg);
+  color: var(--yg-body);
+  font-family: var(--yg-font);
+  font-size: var(--yg-fs-body);
+  line-height: var(--yg-lh-body);
+  -webkit-font-smoothing: antialiased;
+}
+.yg-base :where(h1, h2, h3) { color: var(--yg-ink); line-height: 1.2; }
+.yg-base :where(a) { color: var(--yg-accent-text); }
+.yg-base :where(a:hover) { color: var(--yg-accent-hover); }
+.yg-base :where(:focus-visible) { outline: 2px solid var(--yg-accent); outline-offset: 3px; }
+.yg-base :where(code, pre) { font-family: var(--yg-font-mono); }
+
+/* Section title, optionally with an eyebrow above it */
+.yg-title {
+  font-family: var(--yg-font);
+  font-size: var(--yg-fs-h2);
+  font-weight: var(--yg-title-weight);
+  letter-spacing: var(--yg-title-tracking);
+  line-height: var(--yg-title-leading);
+  color: var(--yg-ink);
+}
+.yg-page-title {
+  font-family: var(--yg-font);
+  font-size: var(--yg-fs-h1);
+  font-weight: var(--yg-title-weight);
+  letter-spacing: -0.02em;
+  line-height: 1;
+  text-transform: uppercase;
+  color: var(--yg-ink);
+}
+
+/* Eyebrow: small blue rule + uppercase tracked label ("—— 01", "—— PROJECTS") */
+.yg-eyebrow {
+  display: block;
+  padding-left: calc(var(--yg-eyebrow-rule) + var(--yg-eyebrow-rule-gap));
+  font-family: var(--yg-font);
+  font-size: var(--yg-fs-label);
+  font-weight: var(--yg-label-weight);
+  letter-spacing: var(--yg-label-tracking);
+  line-height: 1.2;
+  text-transform: uppercase;
+  color: var(--yg-accent-text);
+  background: linear-gradient(var(--yg-accent), var(--yg-accent)) left center / var(--yg-eyebrow-rule) 2px no-repeat;
+}
+
+/* Numbered titles: .yg-numbered on a container, .yg-title inside gets "01", "02", ... */
+.yg-numbered { counter-reset: yg-sec; }
+.yg-numbered .yg-title { counter-increment: yg-sec; }
+.yg-numbered .yg-title::before {
+  content: counter(yg-sec, decimal-leading-zero);
+  display: block;
+  min-height: 1.2em;
+  margin-bottom: 0.45rem;
+  padding-left: calc(var(--yg-eyebrow-rule) + var(--yg-eyebrow-rule-gap));
+  font-size: var(--yg-fs-label);
+  font-weight: var(--yg-label-weight);
+  letter-spacing: var(--yg-label-tracking);
+  line-height: 1.2;
+  color: var(--yg-accent-text);
+  background: linear-gradient(var(--yg-accent), var(--yg-accent)) left center / var(--yg-eyebrow-rule) 2px no-repeat;
+}
+
+/* Hero name: huge, uppercase, tight. Add .yg-outline for the outline line. */
+.yg-hero-name {
+  font-family: var(--yg-font);
+  font-size: var(--yg-fs-display);
+  font-weight: var(--yg-display-weight);
+  letter-spacing: var(--yg-display-tracking);
+  line-height: var(--yg-display-leading);
+  text-transform: uppercase;
+  color: var(--yg-ink);
+}
+.yg-outline {
+  font-weight: 340;
+  color: transparent;
+  -webkit-text-stroke: max(1.5px, 0.012em) var(--yg-ink);
+}
+
+/* Surfaces */
+.yg-card {
+  background: var(--yg-card);
+  border-radius: var(--yg-radius-md);
+  box-shadow: var(--yg-raised);
+}
+.yg-raised    { box-shadow: var(--yg-raised); }
+.yg-raised-sm { box-shadow: var(--yg-raised-sm); }
+.yg-inset     { background: var(--yg-bg); box-shadow: var(--yg-inset); }
+.yg-edge-top  { border-top: var(--yg-edge); }
+.yg-edge-left { border-left: var(--yg-edge); }
+
+/* Small pieces */
+.yg-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  padding: 0.35rem 0.95rem;
+  border-radius: var(--yg-radius-pill);
+  background: var(--yg-bg);
+  box-shadow: var(--yg-raised-sm);
+  font-family: var(--yg-font);
+  font-size: 0.85rem;
+  color: var(--yg-muted);
+  text-decoration: none;
+}
+.yg-tag {   /* solid accent label, like the CV skill pills */
+  display: inline-block;
+  padding: 0.22rem 0.65rem;
+  border-radius: var(--yg-radius-sm);
+  background: var(--yg-accent);
+  color: var(--yg-on-accent);
+  font-family: var(--yg-font);
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
