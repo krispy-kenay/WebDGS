@@ -78,6 +78,7 @@ export class TiledBackwardPass {
     private readonly preprocessPipeline: GPUComputePipeline;
     private readonly accumulatePipeline: GPUComputePipeline;
     private readonly lossPipeline: GPUComputePipeline;
+    private readonly ssimStatsPipeline: GPUComputePipeline;
     private readonly backwardRasterizePipeline: GPUComputePipeline;
     private readonly backwardRasterizeNoStatsPipeline: GPUComputePipeline;
     private densifyStatsEnabled = true;
@@ -90,6 +91,8 @@ export class TiledBackwardPass {
 
     // Bind Groups
     private lossBindGroup: GPUBindGroup | null = null;
+    // Per pixel SSIM partial derivatives, sized to the viewport on first use
+    private ssimPartials: GPUBuffer | null = null;
     private backwardRasterizeBindGroups: GPUBindGroup[] = [];
     private backwardGeometryBindGroups: GPUBindGroup[] = [];
 
@@ -203,6 +206,11 @@ export class TiledBackwardPass {
             label: 'loss-compute',
             layout: 'auto',
             compute: { module: lossModule, entryPoint: 'compute_loss_grad' }
+        });
+        this.ssimStatsPipeline = device.createComputePipeline({
+            label: 'ssim-stats',
+            layout: 'auto',
+            compute: { module: lossModule, entryPoint: 'ssim_stats' }
         });
 
         // Metric-map pipelines
@@ -399,6 +407,37 @@ export class TiledBackwardPass {
         predictedTexture: GPUTextureView,
         targetTexture: GPUTextureView
     ): void {
+        this.encodeLoss(encoder, predictedTexture, targetTexture);
+    }
+
+    // SSIM window statistics first then the per-pixel gradient
+    private encodeLoss(encoder: GPUCommandEncoder, predictedTexture: GPUTextureView, targetTexture: GPUTextureView): void {
+        const partialsBytes = Math.max(1, this.viewportWidth * this.viewportHeight) * 9 * 4;
+        if (!this.ssimPartials || this.ssimPartials.size !== partialsBytes) {
+            this.ssimPartials?.destroy();
+            this.ssimPartials = createBuffer(this.device, 'ssim-partials', partialsBytes, GPUBufferUsage.STORAGE);
+        }
+        const groupsX = Math.ceil(this.viewportWidth / 16);
+        const groupsY = Math.ceil(this.viewportHeight / 16);
+
+        if (this.trainingConfig.lambda_dssim > 0) {
+            const statsBindGroup = this.device.createBindGroup({
+                label: 'ssim-stats-bind-group',
+                layout: this.ssimStatsPipeline.getBindGroupLayout(0),
+                entries: [
+                    { binding: 0, resource: predictedTexture },
+                    { binding: 1, resource: targetTexture },
+                    { binding: 3, resource: { buffer: this.trainingConfigBuffer } },
+                    { binding: 4, resource: { buffer: this.ssimPartials } }
+                ]
+            });
+            const pass = encoder.beginComputePass({ label: 'ssim-stats-pass' });
+            pass.setPipeline(this.ssimStatsPipeline);
+            pass.setBindGroup(0, statsBindGroup);
+            pass.dispatchWorkgroups(groupsX, groupsY);
+            pass.end();
+        }
+
         this.lossBindGroup = this.device.createBindGroup({
             label: 'loss-bind-group',
             layout: this.lossPipeline.getBindGroupLayout(0),
@@ -406,17 +445,14 @@ export class TiledBackwardPass {
                 { binding: 0, resource: predictedTexture },
                 { binding: 1, resource: targetTexture },
                 { binding: 2, resource: this.lossGradientTexture.createView() },
-                { binding: 3, resource: { buffer: this.trainingConfigBuffer } }
+                { binding: 3, resource: { buffer: this.trainingConfigBuffer } },
+                { binding: 4, resource: { buffer: this.ssimPartials } }
             ]
         });
-
         const pass = encoder.beginComputePass({ label: 'loss-compute-pass' });
         pass.setPipeline(this.lossPipeline);
         pass.setBindGroup(0, this.lossBindGroup);
-        pass.dispatchWorkgroups(
-            Math.ceil(this.viewportWidth / 16),
-            Math.ceil(this.viewportHeight / 16)
-        );
+        pass.dispatchWorkgroups(groupsX, groupsY);
         pass.end();
     }
 
@@ -611,28 +647,7 @@ export class TiledBackwardPass {
         options?: TiledBackwardPassOptions
     ): void {
 
-        // Compute Loss Gradients
-        {
-            this.lossBindGroup = this.device.createBindGroup({
-                label: 'loss-bind-group',
-                layout: this.lossPipeline.getBindGroupLayout(0),
-                entries: [
-                    { binding: 0, resource: predictedTexture },
-                    { binding: 1, resource: targetTexture },
-                    { binding: 2, resource: this.lossGradientTexture.createView() },
-                    { binding: 3, resource: { buffer: this.trainingConfigBuffer } }
-                ]
-            });
-
-            const pass = encoder.beginComputePass({ label: 'loss-compute-pass' });
-            pass.setPipeline(this.lossPipeline);
-            pass.setBindGroup(0, this.lossBindGroup);
-            pass.dispatchWorkgroups(
-                Math.ceil(this.viewportWidth / 16),
-                Math.ceil(this.viewportHeight / 16)
-            );
-            pass.end();
-        }
+        this.encodeLoss(encoder, predictedTexture, targetTexture);
 
         // Clear Atomic Buffers
         encoder.clearBuffer(this.gradMeans2D);
@@ -868,6 +883,7 @@ export class TiledBackwardPass {
         if (this.destroyed) return;
         this.destroyed = true;
 
+        this.ssimPartials?.destroy();
         this.gradMeans2D.destroy();
         this.gradConics.destroy();
         this.gradOpacity.destroy();
