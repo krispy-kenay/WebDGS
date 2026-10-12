@@ -22,6 +22,8 @@ export interface DensifyPruneConfig {
     // Mean gradient a clone needs and mean absolute gradient a split needs
     gradThreshold?: number;
     gradAbsThreshold?: number;
+    // Prune Gaussians larger than this in world units (0 = off)
+    pruneScaleThreshold?: number;
     maxNewPointsPerStep?: number;
     maxBufferBytes?: number;
 }
@@ -167,7 +169,7 @@ export class DensifyPrunePass {
         this.decideConfigBuffer = createBuffer(
             device,
             'densify-prune decide config',
-            32,
+            48,
             GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST
         );
 
@@ -494,7 +496,7 @@ export class DensifyPrunePass {
         const pruneOpacity = this.config.pruneThreshold ?? 0;
         const splitScaleThreshold = this.config.splitThreshold ?? 1e9;
 
-        const uni = new ArrayBuffer(32);
+        const uni = new ArrayBuffer(48);
         const u32 = new Uint32Array(uni);
         const f32 = new Float32Array(uni);
         u32[0] = this.numPoints;
@@ -505,6 +507,7 @@ export class DensifyPrunePass {
         f32[5] = splitScaleThreshold;
         f32[6] = this.config.gradThreshold ?? 0;
         f32[7] = this.config.gradAbsThreshold ?? 0;
+        f32[8] = this.config.pruneScaleThreshold ?? 0;
         this.device.queue.writeBuffer(this.decideConfigBuffer, 0, uni);
 
         const bindGroup = this.device.createBindGroup({

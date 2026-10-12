@@ -42,7 +42,14 @@ export interface DensifyPruneTrainingConfig {
     // Mean gradient a clone needs and mean absolute gradient a split needs
     gradThreshold: number;
     gradAbsThreshold: number;
+    // Cap all opacities at 0.01 this often while densifying (0 = off)
+    opacityResetInterval: number;
+    // After the first opacity reset, prune Gaussians larger than this fraction of the scene extent
+    pruneScaleFraction: number;
 }
+
+// Opacity an opacity reset caps every Gaussian at
+const OPACITY_RESET_MAX = 0.01;
 
 // 3DGS scene extent
 function sceneExtent(cameras: CameraData[]): number {
@@ -91,6 +98,7 @@ export class Trainer {
     private stepItersPerSec = 0;
     private stepMs = 0;
     private lastDensifyPruneIteration: number | null = null;
+    private opacityResetPending = false;
     private lastViewportWidth = 1;
     private lastViewportHeight = 1;
 
@@ -182,6 +190,8 @@ export class Trainer {
             splitScaleFraction: 0.001,
             gradThreshold: 0.0002,
             gradAbsThreshold: 0.0012,
+            opacityResetInterval: 3000,
+            pruneScaleFraction: 0.1,
         };
 
         this.densifyPrune = new DensifyPrunePass(this.device);
@@ -485,6 +495,11 @@ export class Trainer {
         const encoder = this.device.createCommandEncoder({ label: 'densify-prune prepare' });
         this.metricsPass.normalizeMetricCounts(encoder, { divisor: usedViews });
 
+        // Oversized Gaussians are pruned once the first opacity reset is past
+        const c = this.densifyPruneConfig;
+        const pruneBig = this.iteration > c.opacityResetInterval;
+        this.densifyPrune.setConfig({ pruneScaleThreshold: pruneBig ? c.pruneScaleFraction * this.sceneExtent : 0 });
+
         this.densifyPrune.ensureSize(this.pointCloud.num_points);
         const densifyPrepared = this.densifyPrune.encodePrepare(encoder, {
             pointCloud: this.pointCloud,
@@ -562,6 +577,7 @@ export class Trainer {
         this.stepItersPerSec = 0;
         this.stepMs = 0;
         this.lastDensifyPruneIteration = null;
+        this.opacityResetPending = false;
         console.log("Training started");
     }
 
@@ -658,6 +674,12 @@ export class Trainer {
 
         const encoder = this.device.createCommandEncoder({ label: 'trainer-step' });
 
+        // Opacity reset scheduled by the previous step, so it also covers a point cloud swapped in since
+        if (this.opacityResetPending && this.optimizer) {
+            this.optimizer.encodeOpacityReset(encoder, this.pointCloud, OPACITY_RESET_MAX);
+            this.opacityResetPending = false;
+        }
+
         // Forward Pass
         this.forwardPass!.encode(encoder);
 
@@ -711,6 +733,10 @@ export class Trainer {
 
         if (shouldDensify) {
             await this.runDensifyPruneMultiView();
+        }
+        const resetEvery = this.densifyPruneConfig.opacityResetInterval;
+        if (this.densifyPruneConfig.schedule.enabled && resetEvery > 0 && this.iteration % resetEvery === 0 && this.iteration < stop) {
+            this.opacityResetPending = true;
         }
 
         if (this.iteration >= this.maxIterations) {

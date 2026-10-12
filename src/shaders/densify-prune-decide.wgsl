@@ -22,6 +22,12 @@ struct DecideConfig {
   split_scale_threshold: f32,
   grad_threshold: f32,
   grad_abs_threshold: f32,
+
+  // Prune Gaussians whose largest scale exceeds this (0 = off)
+  prune_scale_threshold: f32,
+  _pad0: f32,
+  _pad1: f32,
+  _pad2: f32,
 };
 
 @group(0) @binding(0) var<uniform> cfg: DecideConfig;
@@ -68,18 +74,20 @@ fn decide_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     count = metric_counts[idx];
   }
 
+  let s0 = unpack2x16float(g.scale[0]);
+  let s1 = unpack2x16float(g.scale[1]);
+  let scale3 = exp(vec3<f32>(s0.x, s0.y, s1.x));
+  let max_scale = max(scale3.x, max(scale3.y, scale3.z));
+  let too_big = cfg.prune_scale_threshold > 0.0 && max_scale > cfg.prune_scale_threshold;
+
   var action: u32 = 0u;
   var out_count: u32 = 1u;
 
-  if (opacity < cfg.prune_opacity) {
+  if (opacity < cfg.prune_opacity || too_big) {
     action = 3u;
     out_count = 0u;
   } else if (count >= cfg.clone_threshold_count) {
     // Decide clone vs split by 3D scale magnitude.
-    let s0 = unpack2x16float(g.scale[0]);
-    let s1 = unpack2x16float(g.scale[1]);
-    let scale3 = exp(vec3<f32>(s0.x, s0.y, s1.x));
-    let max_scale = max(scale3.x, max(scale3.y, scale3.z));
     let split = max_scale > cfg.split_scale_threshold;
 
     var grad_ok = true;

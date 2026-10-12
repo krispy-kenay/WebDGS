@@ -1,6 +1,7 @@
 import { PointCloud } from '../utils/load';
 import adamWGSL from '../shaders/adam.wgsl';
 import updateGaussiansWGSL from '../shaders/update-gaussians.wgsl';
+import opacityResetWGSL from '../shaders/opacity-reset.wgsl';
 import { AdamHyperparameters, DEFAULT_ADAM_HYPERPARAMETERS } from './adam-config';
 import { TiledBackwardResources } from './tiled-backward-pass';
 
@@ -50,6 +51,8 @@ export class Optimizer {
     // Pipelines
     private adamPipeline: GPUComputePipeline;
     private updatePipeline: GPUComputePipeline;
+    private opacityResetPipeline: GPUComputePipeline;
+    private opacityResetInfoBuffer: GPUBuffer;
 
     // Combined Optimizer Buffers 
     private optPosBuffer: GPUBuffer;
@@ -111,6 +114,17 @@ export class Optimizer {
             label: 'update-gaussians-pipeline',
             layout: 'auto',
             compute: { module: updateModule, entryPoint: 'main' }
+        });
+
+        this.opacityResetPipeline = device.createComputePipeline({
+            label: 'opacity-reset-pipeline',
+            layout: 'auto',
+            compute: { module: device.createShaderModule({ label: 'opacity-reset-shader', code: opacityResetWGSL }), entryPoint: 'opacity_reset_main' }
+        });
+        this.opacityResetInfoBuffer = device.createBuffer({
+            label: 'opacity-reset-info',
+            size: 16,
+            usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST
         });
 
         // Create Fixed Bind Groups
@@ -349,10 +363,34 @@ export class Optimizer {
         }
     }
 
+    // Opacity reset
+    encodeOpacityReset(encoder: GPUCommandEncoder, pointCloud: PointCloud, maxOpacity: number): void {
+        const info = new ArrayBuffer(16);
+        new Uint32Array(info)[0] = this.numPoints;
+        new Float32Array(info)[1] = Math.log(maxOpacity / (1 - maxOpacity));
+        this.device.queue.writeBuffer(this.opacityResetInfoBuffer, 0, info);
+
+        const bindGroup = this.device.createBindGroup({
+            label: 'opacity-reset-bg',
+            layout: this.opacityResetPipeline.getBindGroupLayout(0),
+            entries: [
+                { binding: 0, resource: { buffer: this.opacityResetInfoBuffer } },
+                { binding: 1, resource: { buffer: this.optOpacityBuffer } },
+                { binding: 2, resource: { buffer: pointCloud.gaussian_3d_buffer } },
+            ]
+        });
+        const pass = encoder.beginComputePass({ label: 'opacity-reset' });
+        pass.setPipeline(this.opacityResetPipeline);
+        pass.setBindGroup(0, bindGroup);
+        pass.dispatchWorkgroups(Math.ceil(this.numPoints / 256));
+        pass.end();
+    }
+
     destroy(): void {
         if (this.destroyed) return;
         this.destroyed = true;
         this.configBuffer.destroy();
+        this.opacityResetInfoBuffer.destroy();
         this.optPosBuffer.destroy();
         this.optRotBuffer.destroy();
         this.optScaleBuffer.destroy();
