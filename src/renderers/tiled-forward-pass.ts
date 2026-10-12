@@ -20,6 +20,9 @@ const TILE_HEIGHT = 16;
 // Sort block size, tile-entry capacities are multiples of it
 const KEYS_PER_SORT_BLOCK = C.histogram_wg_size * C.rs_histogram_block_rows;
 
+// Largest screen radius a splat keeps (box plus margin then spans at most 44 x 44 tiles)
+export const MAX_SPLAT_RADIUS_PX = 336;
+
 // Initial sort capacity per Gaussian, grown on demand (see syncCapacity)
 const INITIAL_TILES_PER_GAUSSIAN = 10;
 
@@ -172,7 +175,7 @@ export class TiledForwardPass {
             config.viewportHeight,
             config.pointSizePx ?? 3.0,
             this.renderMode === 'gaussian' ? 1.0 : 0.0,
-            config.maxSplatRadiusPx ?? 128.0,
+            config.maxSplatRadiusPx ?? MAX_SPLAT_RADIUS_PX,
         ]);
         this.settingsBuffer = createBuffer(
             device, 'settings', this.settingsData.byteLength,

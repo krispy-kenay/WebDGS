@@ -5,6 +5,7 @@
  */
 
 import { PointCloud } from '../utils/load';
+import { MAX_SPLAT_RADIUS_PX } from './tiled-forward-pass';
 import commonWGSL from '../shaders/common.wgsl';
 import lossWGSL from '../shaders/loss.wgsl';
 import backwardRasterizeWGSL from '../shaders/tiled-backward-rasterize.wgsl';
@@ -160,7 +161,7 @@ export class TiledBackwardPass {
             config.viewportHeight,
             config.pointSizePx ?? 3.0,
             0.0,
-            config.maxSplatRadiusPx ?? 128.0,
+            config.maxSplatRadiusPx ?? MAX_SPLAT_RADIUS_PX,
         ]);
         this.settingsBuffer = createBuffer(
             device, 'backward-settings', this.settingsData.byteLength,
