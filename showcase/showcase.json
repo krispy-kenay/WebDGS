@@ -1,0 +1,168 @@
+{
+  "schema_version": 1,
+  "id": "webdgs",
+  "title": "WebDGS",
+  "subtitle": "Differentiable Gaussian Splatting, trained in the browser with WebGPU",
+  "blurb": "A complete 3D Gaussian Splatting training loop that runs client-side on WebGPU: tiled forward and backward rasterization, Adam updates, FastGS-style densify and prune, and a deterministic GPU radix sort, with the scene rendered live while it trains.",
+  "demo_url": "https://krispy-kenay.github.io/WebDGS/",
+  "repo_url": "https://github.com/krispy-kenay/WebDGS",
+  "tags": [
+    "WebGPU",
+    "WGSL",
+    "TypeScript",
+    "Gaussian Splatting",
+    "Differentiable Rendering"
+  ],
+  "cover": "locomotive-flythrough",
+  "media": [
+    {
+      "id": "locomotive-flythrough",
+      "type": "video",
+      "title": "Fly-through of the trained scene",
+      "files": {
+        "mp4": "video/locomotive-flythrough.mp4",
+        "webm": "video/locomotive-flythrough.webm",
+        "gif": "gif/locomotive-flythrough.gif"
+      },
+      "poster": {
+        "jpg": "poster/locomotive-flythrough.jpg",
+        "webp": "poster/locomotive-flythrough.webp"
+      },
+      "caption": "Free-camera fly-through of the Western Pacific 713 locomotive scene after training in WebDGS.",
+      "alt": "Camera gliding along a green Western Pacific 713 diesel locomotive and around its cab, rendered from trained Gaussian splats.",
+      "width": 980,
+      "height": 544,
+      "gif_width": 320,
+      "gif_height": 178,
+      "duration_s": 15.0,
+      "autoplay": true,
+      "loop": true,
+      "muted": true,
+      "bytes": {
+        "mp4": 3244548,
+        "webm": 2549204,
+        "gif": 3854811
+      },
+      "poster_bytes": {
+        "jpg": 77066,
+        "webp": 52510
+      }
+    },
+    {
+      "id": "training-side-view",
+      "type": "video",
+      "title": "Training progress: side view",
+      "files": {
+        "mp4": "video/training-side-view.mp4",
+        "webm": "video/training-side-view.webm",
+        "gif": "gif/training-side-view.gif"
+      },
+      "poster": {
+        "jpg": "poster/training-side-view.jpg",
+        "webp": "poster/training-side-view.webp"
+      },
+      "caption": "Side view of the locomotive as training runs from iteration 0 (sparse COLMAP points) to a dense splat scene.",
+      "alt": "Side view of a green locomotive turning from scattered noisy points into a sharp image as the iteration and Gaussian counters climb.",
+      "width": 980,
+      "height": 544,
+      "gif_width": 360,
+      "gif_height": 200,
+      "duration_s": 11.7,
+      "autoplay": true,
+      "loop": true,
+      "muted": true,
+      "bytes": {
+        "mp4": 1692112,
+        "webm": 1590969,
+        "gif": 2757890
+      },
+      "poster_bytes": {
+        "jpg": 78240,
+        "webp": 53374
+      }
+    },
+    {
+      "id": "training-front-view",
+      "type": "video",
+      "title": "Training progress: front view",
+      "files": {
+        "mp4": "video/training-front-view.mp4",
+        "webm": "video/training-front-view.webm",
+        "gif": "gif/training-front-view.gif"
+      },
+      "poster": {
+        "jpg": "poster/training-front-view.jpg",
+        "webp": "poster/training-front-view.webp"
+      },
+      "caption": "Front view of locomotive 713 converging during training, with the iteration and Gaussian counts overlaid.",
+      "alt": "Front of locomotive number 713 with orange handrails emerging from scattered points into a clear image during training.",
+      "width": 980,
+      "height": 544,
+      "gif_width": 360,
+      "gif_height": 200,
+      "duration_s": 11.7,
+      "autoplay": true,
+      "loop": true,
+      "muted": true,
+      "bytes": {
+        "mp4": 1670027,
+        "webm": 1371717,
+        "gif": 2728363
+      },
+      "poster_bytes": {
+        "jpg": 61416,
+        "webp": 39136
+      }
+    },
+    {
+      "id": "training-cab-closeup",
+      "type": "video",
+      "title": "Training progress: cab close-up",
+      "files": {
+        "mp4": "video/training-cab-closeup.mp4",
+        "webm": "video/training-cab-closeup.webm",
+        "gif": "gif/training-cab-closeup.gif"
+      },
+      "poster": {
+        "jpg": "poster/training-cab-closeup.jpg",
+        "webp": "poster/training-cab-closeup.webp"
+      },
+      "caption": "Close-up of the cab side, showing fine detail and background trees forming as Gaussians densify.",
+      "alt": "Close-up of the striped cab end of locomotive 713 sharpening from noise while trees and parked trucks appear behind it.",
+      "width": 980,
+      "height": 544,
+      "gif_width": 360,
+      "gif_height": 200,
+      "duration_s": 11.7,
+      "autoplay": true,
+      "loop": true,
+      "muted": true,
+      "bytes": {
+        "mp4": 1895605,
+        "webm": 1582224,
+        "gif": 2736406
+      },
+      "poster_bytes": {
+        "jpg": 58261,
+        "webp": 38246
+      }
+    },
+    {
+      "id": "photo-vs-webdgs-20k",
+      "type": "image",
+      "title": "Photo vs WebDGS at 20k iterations",
+      "files": {
+        "jpg": "image/photo-vs-webdgs-20k.jpg",
+        "webp": "image/photo-vs-webdgs-20k.webp"
+      },
+      "caption": "Reference photo next to the WebDGS render from the same camera after 20,000 iterations.",
+      "alt": "Side-by-side of a training photo of the locomotive and the matching WebDGS render after 20k iterations.",
+      "width": 1968,
+      "height": 545,
+      "bytes": {
+        "jpg": 230755,
+        "webp": 144220
+      }
+    }
+  ]
+}
