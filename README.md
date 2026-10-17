@@ -91,7 +91,7 @@ The UI is designed to feel more like a live lab bench than a static viewer. Trai
 ## Technical outline
 At a high level, training repeatedly renders the current Gaussians from one or more camera views, computes a loss against the reference images, backpropagates gradients into Gaussian parameters, and applies an optimizer update. On a schedule, the system densifies (clone/split) and prunes (drop low-value Gaussians) to keep capacity where it matters.
 
-The implementation is GPU-first. Forward and backward passes are tiled for efficiency, tile entries are ordered by a deterministic GPU radix sort, gradients are accumulated in 64-bit fixed point, and densify/prune is executed with multiple compute stages, including a GPU-side scatter that compacts and expands the Gaussian buffers. The October 2026 update (FastGS-style densification, the portable sort, the wider accumulators and tile-overflow handling) is described below.
+The implementation is GPU-first. Forward and backward passes are tiled for efficiency, tile entries are ordered by a deterministic GPU radix sort, gradients are accumulated in 64-bit fixed point, and densify/prune is executed with multiple compute stages, including a GPU-side scatter that compacts and expands the Gaussian buffers. The October 2026 update (FastGS-style densification with opacity reset, an exact D-SSIM gradient, the portable sort, the wider accumulators and tile-overflow handling) is described below.
 
 ### Shader integration
 WGSL is imported directly as source strings via a Vite plugin, so pipelines can be built without custom bundling steps.
@@ -112,7 +112,7 @@ import scatterGaussiansWGSL from '../shaders/densify-prune-scatter-gaussians.wgs
 ```
 
 ### Densify and prune (FastGS-style, GPU rebuild)
-Densification follows the FastGS recipe. A Gaussian becomes a densify candidate when it is important in enough sampled training views: `metricViews` views are rendered at `1/metricDownscale` resolution, each view's per-pixel L1 error is normalised to [0, 1] and thresholded at `metricThreshold`, and a Gaussian whose footprint hits high-error pixels in at least `cloneThresholdCount` views qualifies. Candidates are then gated by their accumulated view-space gradients since the last densify step, and the decision between clone and split is relative to the scene extent rather than a fixed world-space size. Gaussians whose opacity falls below `pruneOpacity` are pruned.
+Densification follows the FastGS recipe. A Gaussian becomes a densify candidate when it is important in enough sampled training views: `metricViews` views are rendered at `1/metricDownscale` resolution, each view's per-pixel L1 error is normalised to [0, 1] and thresholded at `metricThreshold`, and a Gaussian whose footprint hits high-error pixels in at least `cloneThresholdCount` views qualifies. Candidates are then gated by their accumulated view-space gradients since the last densify step, and the decision between clone and split is relative to the scene extent rather than a fixed world-space size. Gaussians whose opacity falls below `pruneOpacity` are pruned. Every `opacityResetInterval` iterations (while densifying) all opacities are capped at 0.01 so floaters fade out and get pruned, and after the first reset Gaussians larger than `pruneScaleFraction` of the scene extent are pruned as well.
 
 ```ts
 // src/trainer.ts
@@ -134,6 +134,8 @@ this.densifyPruneConfig = {
     splitScaleFraction: 0.001,
     gradThreshold: 0.0002,
     gradAbsThreshold: 0.0012,
+    opacityResetInterval: 3000,
+    pruneScaleFraction: 0.1,
 };
 ```
 
@@ -280,7 +282,7 @@ The number of (Gaussian, tile) entries is only known on the GPU after the prefix
 ```
 
 ### Loss weighting
-Training exposes the loss weights directly in the UI (L1, L2, and a DSSIM-style term). The defaults are set in the trainer:
+Training exposes the loss weights directly in the UI (L1, L2, and D-SSIM). The D-SSIM gradient is exact: SSIM uses the usual 11×11 Gaussian window, and two passes in `src/shaders/loss.wgsl` first compute each window's statistics and partial derivatives, then sum them back onto every pixel. It is checked against finite differences, and it is what lets densification find detail in textured regions. The defaults are set in the trainer:
 
 ```ts
 // src/trainer.ts
@@ -299,7 +301,43 @@ The codebase is separated into a small number of focused modules:
 If you are looking for a “tour route” through the code, start with `src/main.ts` (UI + initialization), then read `src/trainer.ts` (the training loop), and then dive into `src/renderers` and `src/shaders`. The densify/prune implementation is one of the more distinctive parts of the repo: it includes a multi-view importance metric, a gradient-gated decision pass, a total/cap pass, and a scatter pass that compacts and expands the Gaussian buffers entirely on the GPU. The training loop also keeps optimizer state in GPU buffers and applies Adam updates without CPU involvement.
 
 ## Performance and constraints
-Because everything runs in the browser, performance depends heavily on GPU support and driver maturity. Discrete GPUs are recommended for larger scenes, and very large datasets may hit browser memory limits. The app requests the adapter's full buffer limits, grows the tile sort buffers on demand within them, and drops (rather than corrupts) tile entries that would overflow, while keeping intermediate buffers bounded when densifying.
+Because everything runs in the browser, performance depends heavily on GPU support and driver maturity. Discrete GPUs are recommended for larger scenes, and very large datasets may hit browser memory limits. The app requests the adapter's full buffer limits, grows the tile sort buffers on demand within them, and drops (rather than corrupts) tile entries that would overflow, while keeping intermediate buffers bounded when densifying. Optimizer state is only kept for the colour terms that are actually trained (DC), and densification currently adds at most 5,000 Gaussians per step as a stand-in for a proper memory budget.
+
+## Roadmap
+
+Done in 2026:
+
+- [x] Pair training cameras with photos by file name
+- [x] Correct backward gradients for mean, scale and rotation (viewport factor included)
+- [x] Render each densify metric view from its own camera
+- [x] Densify growth cap no longer deletes surviving Gaussians
+- [x] 64-bit fixed-point gradient accumulators
+- [x] Prefix scan of any size
+- [x] Portable, deterministic radix sort
+- [x] Safe tile-entry overflow with on-demand buffer growth
+- [x] Request the adapter's buffer limits; optimizer state only for the trained colour terms
+- [x] FastGS densification: gradient gating, split relative to scene extent
+- [x] Opacity reset and pruning of oversized Gaussians
+- [x] Splat radius cap raised from 128 to 336 px
+- [x] Exact D-SSIM gradient
+
+Still open:
+
+- [ ] Handle `device.lost` with a visible message instead of a frozen page
+- [ ] Out-of-memory-safe densify swap: keep the old point cloud and warn instead of crashing
+- [ ] Memory budget for total GPU memory, a visible capacity warning, then remove the 5,000-per-step throttle
+- [ ] Keep training photos smaller on the GPU (playroom's photos alone take about 900 MB)
+- [ ] Optimizer: position learning rate scaled by scene extent with decay, Adam bias correction
+- [ ] Check whether the f16-packed gradients can overflow on large Gaussians
+- [ ] Remaining needle artifacts in the sky (models are still several times smaller than the 3DGS reference)
+- [ ] Viewer is a few pixels off from the training camera for the same photo
+- [ ] Per-tile depth limit (8,192 splats) drops splats silently
+- [ ] Faster SSIM (separable blur); skip gradient buffers the densify metric pass never uses
+- [ ] Spherical harmonics above degree 0 (view-dependent colour)
+- [ ] PLY export of the trained model and a "view trained result" button
+- [ ] Example dataset with a "load example" button
+- [ ] Evaluate on held-out views instead of training views
+- [ ] Add a license
 
 ## Notes on scope
 WebDGS is intentionally end-to-end rather than a minimal viewer. The “interesting work” is spread across GPU compute (forward/backward, scatter, sorting), GPU memory layout and resizing for dynamic point counts, and the UI/runtime structure needed to keep training interactive in a browser app.
